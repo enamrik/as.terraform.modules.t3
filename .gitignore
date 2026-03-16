@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.terraform/
+*.tfplan
+_backend.tf
+_provider.tf
+.terraform.lock.hcl
