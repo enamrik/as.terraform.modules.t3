@@ -23,6 +23,8 @@ import {
   envHistoryCommand,
 } from "./commands/env.js";
 import { componentApplyCommand, componentDestroyCommand } from "./commands/component.js";
+import { initCommand } from "./commands/init.js";
+import { componentNewCommand } from "./commands/scaffold.js";
 
 const require = createRequire(import.meta.url);
 const { version } = require("../package.json");
@@ -35,6 +37,17 @@ program
   .version(version)
   .action(() => {
     program.outputHelp();
+  });
+
+// ─── init ────────────────────────────────────────────────────────────────────
+
+program
+  .command("init")
+  .description("Generate backend/provider files and run terraform init for all roots")
+  .requiredOption("--stage <stage>", "Target stage")
+  .option("--env <env>", "Environment name", "integration")
+  .action((opts: { stage: string; env: string }) => {
+    initCommand({ stage: opts.stage, envName: opts.env });
   });
 
 // ─── build ───────────────────────────────────────────────────────────────────
@@ -216,6 +229,13 @@ program
       });
     },
   );
+
+program
+  .command("component:new <name>")
+  .description("Scaffold a new component (terraform + src)")
+  .action((name: string) => {
+    componentNewCommand({ name });
+  });
 
 program.parseAsync().catch((err: Error) => {
   if (err.name === "CredentialsProviderError") {
