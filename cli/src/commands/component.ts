@@ -1,13 +1,13 @@
 /**
- * as component apply|destroy
+ * ascli component:apply|component:destroy
  *
- * Component layer terraform.
- * - apply: terraform apply for one or all components (idempotent)
- * - destroy: terraform destroy for one or all components
+ * Component layer lifecycle.
+ * - apply: create/update for one or all components (idempotent)
+ * - destroy: destroy for one or all components
  */
 
 import { discoverRoot, discoverComponents } from "../lib/conventions.js";
-import { terraformRun } from "../lib/terraform.js";
+import type { IacEngine } from "../lib/engine.js";
 
 export type ComponentApplyOptions = {
   stage: string;
@@ -24,13 +24,13 @@ export type ComponentDestroyOptions = {
   autoApprove?: boolean;
 };
 
-export function componentApplyCommand(opts: ComponentApplyOptions): void {
+export function componentApplyCommand(opts: ComponentApplyOptions, engine: IacEngine): void {
   const root = discoverRoot(process.cwd());
   const components = opts.component ? [opts.component] : discoverComponents(root);
 
   for (const service of components) {
     console.log(`\n── Applying component: ${service} ──`);
-    terraformRun("apply", {
+    engine.apply({
       root,
       stage: opts.stage,
       envName: opts.envName,
@@ -42,13 +42,13 @@ export function componentApplyCommand(opts: ComponentApplyOptions): void {
   }
 }
 
-export function componentDestroyCommand(opts: ComponentDestroyOptions): void {
+export function componentDestroyCommand(opts: ComponentDestroyOptions, engine: IacEngine): void {
   const root = discoverRoot(process.cwd());
   const components = opts.component ? [opts.component] : discoverComponents(root);
 
   for (const service of components) {
     console.log(`\n── Destroying component: ${service} ──`);
-    terraformRun("destroy", {
+    engine.destroy({
       root,
       stage: opts.stage,
       envName: opts.envName,

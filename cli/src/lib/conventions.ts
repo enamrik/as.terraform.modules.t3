@@ -14,11 +14,14 @@ type StageConfig = {
 
 type AsConfig = {
   system: string;
+  engine?: "terraform" | "pulumi";
   stages: Record<string, StageConfig>;
   stateBucket: string;
   artifactBucket: string;
   deploymentsTable: string;
 };
+
+const IAC_DIR = "infra";
 
 let cachedConfig: { root: string; config: AsConfig } | null = null;
 
@@ -58,6 +61,11 @@ export function resolveSystem(root: string): string {
   return config.system;
 }
 
+export function resolveEngineName(root: string): "terraform" | "pulumi" {
+  const config = loadConfig(root);
+  return config.engine ?? "terraform";
+}
+
 export function resolveProfile(root: string, stage: string): string {
   return getStage(loadConfig(root), stage).profile;
 }
@@ -88,9 +96,9 @@ export function resolveStateKey(
   serviceName?: string,
 ): string {
   if (type === "system") {
-    return `terraform/system/${envName}/terraform.tfstate`;
+    return `state/system/${envName}/terraform.tfstate`;
   }
-  return `apps/${serviceName}/terraform/${envName}/terraform.tfstate`;
+  return `state/${serviceName}/${envName}/terraform.tfstate`;
 }
 
 export function resolveArtifactKey(serviceName: string, sha: string, ext: string): string {
@@ -102,15 +110,15 @@ export function resolveEcrRepo(root: string, serviceName: string): string {
   return `${system}/${serviceName}`;
 }
 
-export function resolveTerraformRoot(
+export function resolveIacRoot(
   root: string,
   type: "system" | "component",
   serviceName?: string,
 ): string {
   if (type === "system") {
-    return `${root}/terraform`;
+    return `${root}/${IAC_DIR}`;
   }
-  return `${root}/apps/${serviceName}/terraform`;
+  return `${root}/apps/${serviceName}/${IAC_DIR}`;
 }
 
 export function resolveServiceDir(root: string, serviceName: string): string {
@@ -125,10 +133,12 @@ export function discoverComponents(root: string): string[] {
     .filter((d) => {
       if (!d.isDirectory()) return false;
       const dir = `${appsDir}/${d.name}`;
-      const hasTerraform = existsSync(`${dir}/terraform/main.tf`);
+      const hasIac =
+        existsSync(`${dir}/${IAC_DIR}/main.tf`) ||
+        existsSync(`${dir}/${IAC_DIR}/index.ts`);
       const hasBuildable =
         existsSync(`${dir}/src/handler.ts`) || existsSync(`${dir}/Dockerfile`);
-      return hasTerraform && hasBuildable;
+      return hasIac && hasBuildable;
     })
     .map((d) => d.name);
 }

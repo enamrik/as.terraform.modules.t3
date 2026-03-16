@@ -2,8 +2,8 @@
  * ascli env:apply|env:destroy|env:status|env:history|env:list
  *
  * System layer lifecycle management.
- * - apply: terraform apply on system layer (idempotent)
- * - destroy: terraform destroy on system layer + manifest cleanup
+ * - apply: create/update system layer (idempotent)
+ * - destroy: destroy system layer + manifest cleanup
  * - status: show current deployment manifest
  * - history: show deployment history
  * - list: show all environments for this system in a stage
@@ -16,7 +16,7 @@ import {
   resolveRegion,
   resolveSystem,
 } from "../lib/conventions.js";
-import { terraformRun } from "../lib/terraform.js";
+import type { IacEngine } from "../lib/engine.js";
 import { Manifest } from "../lib/manifest.js";
 
 export type EnvApplyOptions = {
@@ -48,11 +48,11 @@ function createManifest(root: string, stage: string): Manifest {
   return new Manifest(tableName, region, system, profile);
 }
 
-export function envApplyCommand(opts: EnvApplyOptions): void {
+export function envApplyCommand(opts: EnvApplyOptions, engine: IacEngine): void {
   const root = discoverRoot(process.cwd());
 
   console.log(`Applying system layer: ${opts.stage}/${opts.envName}`);
-  terraformRun("apply", {
+  engine.apply({
     root,
     stage: opts.stage,
     envName: opts.envName,
@@ -61,11 +61,11 @@ export function envApplyCommand(opts: EnvApplyOptions): void {
   });
 }
 
-export async function envDestroyCommand(opts: EnvDestroyOptions): Promise<void> {
+export async function envDestroyCommand(opts: EnvDestroyOptions, engine: IacEngine): Promise<void> {
   const root = discoverRoot(process.cwd());
 
   console.log(`Destroying system layer: ${opts.stage}/${opts.envName}`);
-  terraformRun("destroy", {
+  engine.destroy({
     root,
     stage: opts.stage,
     envName: opts.envName,

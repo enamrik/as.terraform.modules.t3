@@ -5,7 +5,7 @@
  *
  * Owns: build, publish, deploy, rollback, env lifecycle, component lifecycle.
  * Reads .as.yml for stage config (profiles, regions, bucket names).
- * Generates backend/provider files and runs terraform directly.
+ * Delegates infrastructure operations to the configured IaC engine.
  *
  * Change detection is NOT the CLI's job — pipelines decide what to run.
  */
@@ -25,6 +25,8 @@ import {
 import { componentApplyCommand, componentDestroyCommand } from "./commands/component.js";
 import { initCommand } from "./commands/init.js";
 import { componentNewCommand } from "./commands/scaffold.js";
+import { artifactCommand } from "./commands/artifact.js";
+import { resolveEngine } from "./lib/resolve-engine.js";
 
 const require = createRequire(import.meta.url);
 const { version } = require("../package.json");
@@ -43,11 +45,12 @@ program
 
 program
   .command("init")
-  .description("Generate backend/provider files and run terraform init for all roots")
+  .description("Initialize infrastructure for all roots (system + components)")
   .requiredOption("--stage <stage>", "Target stage")
   .option("--env <env>", "Environment name", "integration")
   .action((opts: { stage: string; env: string }) => {
-    initCommand({ stage: opts.stage, envName: opts.env });
+    const engine = resolveEngine();
+    initCommand({ stage: opts.stage, envName: opts.env }, engine);
   });
 
 // ─── build ───────────────────────────────────────────────────────────────────
@@ -72,11 +75,23 @@ program
     console.log(`\nPublished: ${result.artifactUri}`);
   });
 
+// ─── artifact (build + publish) ──────────────────────────────────────────
+
+program
+  .command("artifact <service>")
+  .description("Build and publish a service artifact (build + publish)")
+  .requiredOption("--stage <stage>", "Target stage (dev, staging, prod)")
+  .option("--platform <arch>", "Docker platform architecture", "arm64")
+  .action((service: string, opts: { stage: string; platform: string }) => {
+    const result = artifactCommand({ service, stage: opts.stage, platform: opts.platform });
+    console.log(`\nArtifact ready: ${result.artifactUri}`);
+  });
+
 // ─── deploy ──────────────────────────────────────────────────────────────────
 
 program
   .command("deploy <service>")
-  .description("Fast code-only deploy via CodeDeploy (no terraform)")
+  .description("Fast code-only deploy via CodeDeploy (no infrastructure changes)")
   .requiredOption("--stage <stage>", "Target stage (dev, staging, prod)")
   .requiredOption("--env <env>", "Target environment (integration, pr-42, etc.)")
   .option("--sha <sha>", "Deploy a specific previously-published version (defaults to HEAD)")
@@ -115,16 +130,16 @@ program
 
 program
   .command("env:apply")
-  .description("Apply system layer terraform (idempotent)")
+  .description("Apply system layer infrastructure (idempotent)")
   .requiredOption("--stage <stage>", "Target stage")
   .requiredOption("--env <env>", "Environment name")
-  .option("-y, --yes", "Auto-approve terraform apply", false)
+  .option("-y, --yes", "Auto-approve", false)
   .action((opts: { stage: string; env: string; yes: boolean }) => {
-    envApplyCommand({
-      stage: opts.stage,
-      envName: opts.env,
-      autoApprove: opts.yes,
-    });
+    const engine = resolveEngine();
+    envApplyCommand(
+      { stage: opts.stage, envName: opts.env, autoApprove: opts.yes },
+      engine,
+    );
   });
 
 program
@@ -132,14 +147,14 @@ program
   .description("Destroy system layer + clean up manifest")
   .requiredOption("--stage <stage>", "Target stage")
   .requiredOption("--env <env>", "Environment name")
-  .option("-y, --yes", "Auto-approve terraform destroy", false)
+  .option("-y, --yes", "Auto-approve", false)
   .action(
     async (opts: { stage: string; env: string; yes: boolean }) => {
-      await envDestroyCommand({
-        stage: opts.stage,
-        envName: opts.env,
-        autoApprove: opts.yes,
-      });
+      const engine = resolveEngine();
+      await envDestroyCommand(
+        { stage: opts.stage, envName: opts.env, autoApprove: opts.yes },
+        engine,
+      );
     },
   );
 
@@ -183,12 +198,12 @@ program
 
 program
   .command("component:apply")
-  .description("Apply component terraform — all components or one (idempotent)")
+  .description("Apply component infrastructure — all components or one (idempotent)")
   .requiredOption("--stage <stage>", "Target stage")
   .requiredOption("--env <env>", "Environment name")
   .requiredOption("--sha <sha>", "Git SHA for component artifact")
   .option("--component <name>", "Apply only this component (defaults to all)")
-  .option("-y, --yes", "Auto-approve terraform apply", false)
+  .option("-y, --yes", "Auto-approve", false)
   .action(
     (opts: {
       stage: string;
@@ -197,23 +212,27 @@ program
       component?: string;
       yes: boolean;
     }) => {
-      componentApplyCommand({
-        stage: opts.stage,
-        envName: opts.env,
-        sha: opts.sha,
-        component: opts.component,
-        autoApprove: opts.yes,
-      });
+      const engine = resolveEngine();
+      componentApplyCommand(
+        {
+          stage: opts.stage,
+          envName: opts.env,
+          sha: opts.sha,
+          component: opts.component,
+          autoApprove: opts.yes,
+        },
+        engine,
+      );
     },
   );
 
 program
   .command("component:destroy")
-  .description("Destroy component terraform — all components or one")
+  .description("Destroy component infrastructure — all components or one")
   .requiredOption("--stage <stage>", "Target stage")
   .requiredOption("--env <env>", "Environment name")
   .option("--component <name>", "Destroy only this component (defaults to all)")
-  .option("-y, --yes", "Auto-approve terraform destroy", false)
+  .option("-y, --yes", "Auto-approve", false)
   .action(
     (opts: {
       stage: string;
@@ -221,18 +240,22 @@ program
       component?: string;
       yes: boolean;
     }) => {
-      componentDestroyCommand({
-        stage: opts.stage,
-        envName: opts.env,
-        component: opts.component,
-        autoApprove: opts.yes,
-      });
+      const engine = resolveEngine();
+      componentDestroyCommand(
+        {
+          stage: opts.stage,
+          envName: opts.env,
+          component: opts.component,
+          autoApprove: opts.yes,
+        },
+        engine,
+      );
     },
   );
 
 program
   .command("component:new <name>")
-  .description("Scaffold a new component (terraform + src)")
+  .description("Scaffold a new component (infrastructure + src)")
   .action((name: string) => {
     componentNewCommand({ name });
   });
