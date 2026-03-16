@@ -1,6 +1,6 @@
 /**
- * as deploy <service> --stage <stage> --env <env> --sha <sha>
- * as rollback <service> --stage <stage> --env <env>
+ * ascli deploy <service> --stage <stage> --env <env> --sha <sha>
+ * ascli rollback <service> --stage <stage> --env <env> [--to <sha>]
  *
  * Deploy: fast code-only update via CodeDeploy (no terraform).
  *   1. UpdateFunctionCode → new S3 artifact on $LATEST
@@ -24,13 +24,13 @@ import {
 } from "@aws-sdk/client-codedeploy";
 import { fromSSO } from "@aws-sdk/credential-provider-sso";
 import { existsSync } from "node:fs";
-import { execSync } from "node:child_process";
-import { gitShortSha } from "../lib/shell.js";
+import { gitShortSha, detectDeployer } from "../lib/shell.js";
 import {
   discoverRoot,
   resolveArtifactBucket,
   resolveArtifactKey,
   resolveDeploymentsTable,
+  resolveEnvName,
   resolveProfile,
   resolveRegion,
   resolveServiceDir,
@@ -41,22 +41,23 @@ import { Manifest } from "../lib/manifest.js";
 export type DeployOptions = {
   service: string;
   stage: string;
-  envName: string;
+  envName?: string;
   sha?: string;
-  autoApprove?: boolean;
+  force?: boolean;
 };
 
 export type RollbackOptions = {
   service: string;
   stage: string;
-  envName: string;
-  autoApprove?: boolean;
+  envName?: string;
+  toSha?: string;
 };
 
 export async function deployCommand(opts: DeployOptions): Promise<void> {
   const root = discoverRoot(process.cwd());
   const region = resolveRegion(root, opts.stage);
   const profile = resolveProfile(root, opts.stage);
+  const envName = resolveEnvName(opts.stage, opts.envName);
   const sha = opts.sha ?? gitShortSha(root);
   const serviceDir = resolveServiceDir(root, opts.service);
   const isImage = existsSync(`${serviceDir}/Dockerfile`);
@@ -68,11 +69,25 @@ export async function deployCommand(opts: DeployOptions): Promise<void> {
 
   const bucket = resolveArtifactBucket(root, opts.stage);
   const artifactKey = resolveArtifactKey(opts.service, sha, "zip");
-  const functionName = `${opts.stage}-${opts.envName}-${opts.service}`;
+  const functionName = `${opts.stage}-${envName}-${opts.service}`;
   const codedeployApp = functionName;
   const deploymentGroup = functionName;
 
-  console.log(`Deploying ${opts.service} → ${opts.stage}/${opts.envName} @ ${sha}`);
+  const tableName = resolveDeploymentsTable(root, opts.stage);
+  const system = resolveSystem(root);
+  const manifest = new Manifest(tableName, region, system, profile);
+
+  // Deploy guard: refuse rejected artifacts for non-dev stages
+  if (!opts.force && opts.stage !== "dev") {
+    const meta = await manifest.getArtifactMeta(opts.service, sha);
+    if (meta?.status === "staging_rejected") {
+      throw new Error(
+        `Artifact ${opts.service}@${sha} is rejected: ${meta.rejectedReason ?? "unknown reason"}. Use --force to override.`,
+      );
+    }
+  }
+
+  console.log(`Deploying ${opts.service} → ${opts.stage}/${envName} @ ${sha}`);
   console.log(`Function: ${functionName}`);
   console.log(`Artifact: s3://${bucket}/${artifactKey}`);
 
@@ -149,17 +164,14 @@ export async function deployCommand(opts: DeployOptions): Promise<void> {
   console.log(`Deployment started: ${deployment.deploymentId}`);
 
   // 6. Update manifest
-  const tableName = resolveDeploymentsTable(root, opts.stage);
-  const system = resolveSystem(root);
-  const manifest = new Manifest(tableName, region, system, profile);
   const deployedBy = detectDeployer();
-  const current = await manifest.getComponent(opts.stage, opts.envName, opts.service);
+  const current = await manifest.getComponent(opts.stage, envName, opts.service);
   const artifactUri = `s3://${bucket}/${artifactKey}`;
 
   try {
     await manifest.deploy(
       opts.stage,
-      opts.envName,
+      envName,
       opts.service,
       sha,
       artifactUri,
@@ -179,13 +191,26 @@ export async function rollbackCommand(opts: RollbackOptions): Promise<void> {
   const root = discoverRoot(process.cwd());
   const region = resolveRegion(root, opts.stage);
   const profile = resolveProfile(root, opts.stage);
+  const envName = resolveEnvName(opts.stage, opts.envName);
   const tableName = resolveDeploymentsTable(root, opts.stage);
   const rollbackSystem = resolveSystem(root);
   const manifest = new Manifest(tableName, region, rollbackSystem, profile);
 
-  const current = await manifest.getComponent(opts.stage, opts.envName, opts.service);
+  if (opts.toSha) {
+    console.log(`Rolling back ${opts.service} → ${opts.toSha}`);
+    await deployCommand({
+      service: opts.service,
+      stage: opts.stage,
+      envName,
+      sha: opts.toSha,
+    });
+    console.log(`\nRollback complete: ${opts.service}@${opts.toSha}`);
+    return;
+  }
+
+  const current = await manifest.getComponent(opts.stage, envName, opts.service);
   if (!current) {
-    console.error(`No deployment found for ${opts.service} in ${opts.stage}/${opts.envName}`);
+    console.error(`No deployment found for ${opts.service} in ${opts.stage}/${envName}`);
     process.exit(1);
   }
 
@@ -199,21 +224,9 @@ export async function rollbackCommand(opts: RollbackOptions): Promise<void> {
   await deployCommand({
     service: opts.service,
     stage: opts.stage,
-    envName: opts.envName,
+    envName,
     sha: current.previousSha,
   });
 
   console.log(`\nRollback complete: ${opts.service}@${current.previousSha}`);
-}
-
-function detectDeployer(): string {
-  if (process.env.GITHUB_ACTIONS) {
-    return `github-actions/${process.env.GITHUB_RUN_ID ?? "unknown"}`;
-  }
-  try {
-    const user = execSync("whoami", { encoding: "utf-8" }).trim();
-    return `local/${user}`;
-  } catch {
-    return "local/unknown";
-  }
 }

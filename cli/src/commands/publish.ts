@@ -1,12 +1,13 @@
 /**
- * as publish <service> --stage <stage>
+ * ascli publish <service> --stage <stage>
  *
  * Uploads a built artifact to S3 (Zip) or ECR (Image).
  * Returns the artifact URI that terraform consumes.
+ * Tags S3 artifacts with status=dev on upload.
  */
 
 import { existsSync } from "node:fs";
-import { exec, gitShortSha } from "../lib/shell.js";
+import { exec, resolveArtifactSha, detectDeployer } from "../lib/shell.js";
 import {
   resolveArtifactBucket,
   resolveArtifactKey,
@@ -16,10 +17,13 @@ import {
   resolveRegion,
   discoverRoot,
 } from "../lib/conventions.js";
+import { setArtifactS3Tags } from "../lib/s3-tags.js";
 
 export type PublishOptions = {
   service: string;
   stage: string;
+  sha?: string;
+  dirty?: boolean;
 };
 
 export type PublishResult = {
@@ -34,13 +38,13 @@ function detectBuildType(serviceDir: string): "zip" | "image" {
   return "zip";
 }
 
-function publishZip(
+async function publishZip(
   root: string,
   serviceDir: string,
   service: string,
   stage: string,
   sha: string,
-): PublishResult {
+): Promise<PublishResult> {
   const bucket = resolveArtifactBucket(root, stage);
   const key = resolveArtifactKey(service, sha, "zip");
   const region = resolveRegion(root, stage);
@@ -55,6 +59,8 @@ function publishZip(
   exec(
     `aws s3 cp /tmp/${service}-${sha}.zip s3://${bucket}/${key} --region ${region} --profile ${profile}`,
   );
+
+  await setArtifactS3Tags(bucket, key, { status: "dev", builtBy: detectDeployer() }, region, profile);
 
   return {
     service,
@@ -98,10 +104,10 @@ function publishImage(
   };
 }
 
-export function publishCommand(opts: PublishOptions): PublishResult {
+export async function publishCommand(opts: PublishOptions): Promise<PublishResult> {
   const root = discoverRoot(process.cwd());
   const serviceDir = resolveServiceDir(root, opts.service);
-  const sha = gitShortSha(root);
+  const sha = opts.sha ?? resolveArtifactSha(root, `${serviceDir}/dist`, opts.dirty ?? false);
   const buildType = detectBuildType(serviceDir);
 
   console.log(`Publishing ${opts.service} (${buildType}) → ${opts.stage}`);

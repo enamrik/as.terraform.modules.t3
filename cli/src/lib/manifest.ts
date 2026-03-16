@@ -1,20 +1,27 @@
 /**
  * Deployment manifest — DynamoDB operations for tracking what's deployed where.
  *
- * Table: as-deployments-{stage}
- * PK: ENV#{system}#{stage}#{env_name}
- * SK: COMPONENT#{service} (current state) or DEPLOY#{timestamp}#{service} (history)
+ * Record types:
+ *   ENV#{system}#{stage}#{env}  / COMPONENT#{service}           — current deployed state
+ *   ENV#{system}#{stage}#{env}  / DEPLOY#{timestamp}#{service}  — deploy history
+ *   TAG#{system}#{service}      / {stage}                       — artifact promotion tags
+ *   ARTIFACT#{system}#{service} / {sha}                         — artifact metadata
+ *   VERIFICATION#{system}#{stage}#{env} / {ts}#{service}        — verification snapshots
  */
 
 import {
   DynamoDBClient,
   TransactWriteItemsCommand,
+  PutItemCommand,
+  GetItemCommand,
   QueryCommand,
   ScanCommand,
   BatchWriteItemCommand,
 } from "@aws-sdk/client-dynamodb";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
 import { fromSSO } from "@aws-sdk/credential-provider-sso";
+
+// ─── Existing record types ──────────────────────────────────────────────────
 
 export type ComponentRecord = {
   service: string;
@@ -42,6 +49,37 @@ export type EnvironmentSummary = {
   lastDeployedAt: string;
 };
 
+// ─── New record types: artifact promotion ───────────────────────────────────
+
+export type TagRecord = {
+  service: string;
+  tag: string;
+  sha: string;
+  taggedAt: string;
+  taggedBy: string;
+};
+
+export type ArtifactRecord = {
+  service: string;
+  sha: string;
+  status: "dev" | "staging" | "staging_rejected" | "prod";
+  builtAt: string;
+  builtBy: string;
+  testedIn?: string;
+  rejectedReason?: string;
+};
+
+export type VerificationRecord = {
+  service: string;
+  sha: string;
+  alongside: Record<string, string>;
+  e2eResult?: "passed" | "failed";
+  pipelineRun?: string;
+  recordedAt: string;
+};
+
+// ─── PK/SK helpers ──────────────────────────────────────────────────────────
+
 function envPk(system: string, stage: string, envName: string): string {
   return `ENV#${system}#${stage}#${envName}`;
 }
@@ -53,6 +91,20 @@ function componentSk(service: string): string {
 function deploySk(timestamp: string, service: string): string {
   return `DEPLOY#${timestamp}#${service}`;
 }
+
+function tagPk(system: string, service: string): string {
+  return `TAG#${system}#${service}`;
+}
+
+function artifactPk(system: string, service: string): string {
+  return `ARTIFACT#${system}#${service}`;
+}
+
+function verificationPk(system: string, stage: string, envName: string): string {
+  return `VERIFICATION#${system}#${stage}#${envName}`;
+}
+
+// ─── Manifest class ─────────────────────────────────────────────────────────
 
 export class Manifest {
   private client: DynamoDBClient;
@@ -67,6 +119,8 @@ export class Manifest {
     this.tableName = tableName;
     this.system = system;
   }
+
+  // ── Deploy & component tracking ─────────────────────────────────────────
 
   async deploy(
     stage: string,
@@ -187,7 +241,6 @@ export class Manifest {
   async listEnvironments(stage: string): Promise<EnvironmentSummary[]> {
     const prefix = `ENV#${this.system}#${stage}#`;
 
-    // Scan with filter — fine for low-volume deployments table
     const envs = new Map<string, { count: number; lastDeployedAt: string }>();
     let lastKey: Record<string, unknown> | undefined;
 
@@ -299,5 +352,149 @@ export class Manifest {
       });
       await this.client.send(command);
     }
+  }
+
+  // ── Artifact promotion: tags ────────────────────────────────────────────
+
+  async tagArtifact(
+    service: string,
+    tag: string,
+    sha: string,
+    taggedBy: string,
+    rejectedReason?: string,
+  ): Promise<void> {
+    const now = new Date().toISOString();
+    const status = tag as ArtifactRecord["status"];
+
+    const command = new TransactWriteItemsCommand({
+      TransactItems: [
+        {
+          Put: {
+            TableName: this.tableName,
+            Item: marshall({
+              pk: tagPk(this.system, service),
+              sk: tag,
+              sha,
+              tagged_at: now,
+              tagged_by: taggedBy,
+              service,
+            }),
+          },
+        },
+        {
+          Put: {
+            TableName: this.tableName,
+            Item: marshall({
+              pk: artifactPk(this.system, service),
+              sk: sha,
+              status,
+              built_at: now,
+              built_by: taggedBy,
+              service,
+              ...(rejectedReason ? { rejected_reason: rejectedReason } : {}),
+            }),
+          },
+        },
+      ],
+    });
+
+    await this.client.send(command);
+  }
+
+  async getTag(service: string, tag: string): Promise<TagRecord | null> {
+    const command = new GetItemCommand({
+      TableName: this.tableName,
+      Key: marshall({ pk: tagPk(this.system, service), sk: tag }),
+    });
+
+    const result = await this.client.send(command);
+    if (!result.Item) return null;
+
+    const item = unmarshall(result.Item);
+    return {
+      service: item.service,
+      tag: item.sk,
+      sha: item.sha,
+      taggedAt: item.tagged_at,
+      taggedBy: item.tagged_by,
+    };
+  }
+
+  async getAllTags(service: string): Promise<TagRecord[]> {
+    const command = new QueryCommand({
+      TableName: this.tableName,
+      KeyConditionExpression: "pk = :pk",
+      ExpressionAttributeValues: marshall({
+        ":pk": tagPk(this.system, service),
+      }),
+    });
+
+    const result = await this.client.send(command);
+    return (result.Items ?? []).map((raw) => {
+      const item = unmarshall(raw);
+      return {
+        service: item.service,
+        tag: item.sk,
+        sha: item.sha,
+        taggedAt: item.tagged_at,
+        taggedBy: item.tagged_by,
+      };
+    });
+  }
+
+  async getAllServiceTags(tag: string, services: string[]): Promise<TagRecord[]> {
+    const results: TagRecord[] = [];
+    for (const service of services) {
+      const record = await this.getTag(service, tag);
+      if (record) results.push(record);
+    }
+    return results;
+  }
+
+  // ── Artifact promotion: metadata ────────────────────────────────────────
+
+  async getArtifactMeta(service: string, sha: string): Promise<ArtifactRecord | null> {
+    const command = new GetItemCommand({
+      TableName: this.tableName,
+      Key: marshall({ pk: artifactPk(this.system, service), sk: sha }),
+    });
+
+    const result = await this.client.send(command);
+    if (!result.Item) return null;
+
+    const item = unmarshall(result.Item);
+    return {
+      service: item.service,
+      sha: item.sk,
+      status: item.status,
+      builtAt: item.built_at,
+      builtBy: item.built_by,
+      testedIn: item.tested_in,
+      rejectedReason: item.rejected_reason,
+    };
+  }
+
+  // ── Artifact promotion: verification snapshots ──────────────────────────
+
+  async recordVerification(
+    stage: string,
+    envName: string,
+    record: VerificationRecord,
+  ): Promise<void> {
+    const command = new PutItemCommand({
+      TableName: this.tableName,
+      Item: marshall({
+        pk: verificationPk(this.system, stage, envName),
+        sk: `${record.recordedAt}#${record.service}`,
+        service: record.service,
+        sha: record.sha,
+        alongside: record.alongside,
+        ...(record.e2eResult ? { e2e_result: record.e2eResult } : {}),
+        ...(record.pipelineRun ? { pipeline_run: record.pipelineRun } : {}),
+        recorded_at: record.recordedAt,
+      }),
+    });
+
+    await this.client.send(command);
   }
 }

@@ -7,15 +7,16 @@
  */
 
 import { existsSync } from "node:fs";
-import { exec, gitShortSha } from "../lib/shell.js";
+import { exec, resolveArtifactSha } from "../lib/shell.js";
 import { resolveServiceDir, discoverRoot } from "../lib/conventions.js";
 
 export type BuildOptions = {
   service: string;
   platform?: string;
+  dirty?: boolean;
 };
 
-type BuildResult = {
+export type BuildResult = {
   service: string;
   type: "zip" | "image";
   localPath: string;
@@ -69,17 +70,19 @@ function buildImage(serviceDir: string, sha: string, platform: string): void {
 export function buildCommand(opts: BuildOptions): BuildResult {
   const root = discoverRoot(process.cwd());
   const serviceDir = resolveServiceDir(root, opts.service);
-  const sha = gitShortSha(root);
   const buildType = detectBuildType(serviceDir);
   const platform = opts.platform ?? "arm64";
-
-  console.log(`Building ${opts.service} (${buildType}) @ ${sha}`);
+  const allowDirty = opts.dirty ?? false;
 
   if (buildType === "zip") {
     buildZip(serviceDir);
+    const sha = resolveArtifactSha(root, `${serviceDir}/dist`, allowDirty);
+    console.log(`Built ${opts.service} (zip) @ ${sha}`);
     return { service: opts.service, type: "zip", localPath: `${serviceDir}/dist`, sha };
   }
 
+  const sha = resolveArtifactSha(root, serviceDir, allowDirty);
+  console.log(`Building ${opts.service} (image) @ ${sha}`);
   buildImage(serviceDir, sha, platform);
   return {
     service: opts.service,

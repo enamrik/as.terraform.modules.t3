@@ -148,6 +148,16 @@ export function resolveTfvarsFile(terraformRoot: string, stage: string): string 
   return existsSync(path) ? path : null;
 }
 
+export function resolveEnvName(stage: string, envFromFlag: string | undefined): string {
+  if (envFromFlag) return envFromFlag;
+  if (stage !== "dev") return stage;
+  throw new Error(
+    `--env is required for stage "dev" (dev environments are always ephemeral)`,
+  );
+}
+
+export const DEFAULT_STAGE = "dev";
+
 export function discoverRoot(cwd: string): string {
   let dir = cwd;
   while (dir !== sep && dir !== "") {
