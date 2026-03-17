@@ -1,0 +1,30 @@
+name: Setup @as/cli
+description: Build and install the AbsenceSoft CLI and Pulumi packages globally
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout as.terraform.modules.t3
+      uses: actions/checkout@v4
+      with:
+        repository: enamrik/as.terraform.modules.t3
+        path: .as-t3
+
+    - name: Build and install
+      shell: bash
+      run: |
+        T3=$GITHUB_WORKSPACE/.as-t3
+
+        # Build @as/pulumi and link globally
+        cd "$T3/pulumi"
+        npm install
+        npm run build
+        sudo npm link
+
+        # Build @as/cli and install globally
+        cd "$T3/cli"
+        npm install
+        npm run build
+        sudo npm install -g .
+
+        ascli --version
