@@ -13,8 +13,8 @@ import {
   resolveArtifactKey,
   resolveEcrRepo,
   resolveServiceDir,
-  resolveProfile,
   resolveRegion,
+  awsProfileFlag,
   discoverRoot,
 } from "../lib/conventions.js";
 import { setArtifactS3Tags } from "../lib/s3-tags.js";
@@ -48,7 +48,7 @@ async function publishZip(
   const bucket = resolveArtifactBucket(root, stage);
   const key = resolveArtifactKey(service, sha, "zip");
   const region = resolveRegion(root, stage);
-  const profile = resolveProfile(root, stage);
+  const profileFlag = awsProfileFlag(root, stage);
   const distDir = `${serviceDir}/dist`;
 
   console.log("Creating zip archive...");
@@ -57,9 +57,10 @@ async function publishZip(
 
   console.log(`Uploading to s3://${bucket}/${key}`);
   exec(
-    `aws s3 cp /tmp/${service}-${sha}.zip s3://${bucket}/${key} --region ${region} --profile ${profile}`,
+    `aws s3 cp /tmp/${service}-${sha}.zip s3://${bucket}/${key} --region ${region} ${profileFlag}`.trim(),
   );
 
+  const profile = process.env.AWS_ACCESS_KEY_ID ? undefined : profileFlag.replace("--profile ", "");
   await setArtifactS3Tags(bucket, key, { status: "dev", builtBy: detectDeployer() }, region, profile);
 
   return {
@@ -77,10 +78,10 @@ function publishImage(
   sha: string,
 ): PublishResult {
   const region = resolveRegion(root, stage);
-  const profile = resolveProfile(root, stage);
+  const profileFlag = awsProfileFlag(root, stage);
   const repoName = resolveEcrRepo(root, service);
   const accountId = exec(
-    `aws sts get-caller-identity --query Account --output text --profile ${profile}`,
+    `aws sts get-caller-identity --query Account --output text ${profileFlag}`.trim(),
     { silent: true },
   ).trim();
   const registryUri = `${accountId}.dkr.ecr.${region}.amazonaws.com`;
@@ -88,7 +89,7 @@ function publishImage(
 
   console.log("Logging in to ECR...");
   exec(
-    `aws ecr get-login-password --region ${region} --profile ${profile} | docker login --username AWS --password-stdin ${registryUri}`,
+    `aws ecr get-login-password --region ${region} ${profileFlag} | docker login --username AWS --password-stdin ${registryUri}`.replace(/  +/g, " "),
   );
 
   const localTag = `${service}:${sha}`;

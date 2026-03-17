@@ -92,7 +92,9 @@ export async function deployCommand(opts: DeployOptions): Promise<void> {
     }
   }
 
-  const credentials = fromSSO({ profile });
+  const credentials = profile && !process.env.AWS_ACCESS_KEY_ID
+    ? fromSSO({ profile })
+    : undefined;
 
   if (isImage) {
     await deployEcs(opts, root, region, envName, sha, manifest, credentials);
@@ -108,7 +110,7 @@ async function deployLambda(
   envName: string,
   sha: string,
   manifest: Manifest,
-  credentials: ReturnType<typeof fromSSO>,
+  credentials: ReturnType<typeof fromSSO> | undefined,
 ): Promise<void> {
   const bucket = resolveArtifactBucket(root, opts.stage);
   const artifactKey = resolveArtifactKey(opts.service, sha, "zip");
@@ -204,7 +206,7 @@ async function deployEcs(
   envName: string,
   sha: string,
   manifest: Manifest,
-  credentials: ReturnType<typeof fromSSO>,
+  credentials: ReturnType<typeof fromSSO> | undefined,
 ): Promise<void> {
   const serviceName = `${opts.stage}-${envName}-${opts.service}`;
   const codedeployApp = serviceName;

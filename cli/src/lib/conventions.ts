@@ -115,6 +115,11 @@ export function resolveProfile(root: string, stage: string): string {
   return getStage(loadConfig(root), stage).profile;
 }
 
+export function awsProfileFlag(root: string, stage: string): string {
+  if (process.env.AWS_ACCESS_KEY_ID) return "";
+  return `--profile ${resolveProfile(root, stage)}`;
+}
+
 export function resolveRegion(root: string, stage: string): string {
   return getStage(loadConfig(root), stage).region;
 }
