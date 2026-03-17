@@ -55,6 +55,11 @@ function buildZip(serviceDir: string): void {
 function buildImage(serviceDir: string, sha: string, platform: string): void {
   const tag = `${serviceDir.split("/").pop()}:${sha}`;
 
+  // Run npm build if present (e.g., api-docs needs to copy merged.json)
+  if (existsSync(`${serviceDir}/package.json`)) {
+    exec("npm run build --if-present", { cwd: serviceDir });
+  }
+
   console.log(`Building Docker image: ${tag}`);
   exec(
     [
