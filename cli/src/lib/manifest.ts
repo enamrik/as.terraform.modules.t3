@@ -112,9 +112,10 @@ export class Manifest {
   private system: string;
 
   constructor(tableName: string, region: string, system: string, profile?: string) {
+    const useSSO = profile && !process.env.AWS_ACCESS_KEY_ID;
     this.client = new DynamoDBClient({
       region,
-      ...(profile ? { credentials: fromSSO({ profile }) } : {}),
+      ...(useSSO ? { credentials: fromSSO({ profile }) } : {}),
     });
     this.tableName = tableName;
     this.system = system;
