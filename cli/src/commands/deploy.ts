@@ -92,7 +92,7 @@ export async function deployCommand(opts: DeployOptions): Promise<void> {
     }
   }
 
-  const credentials = profile && !process.env.AWS_ACCESS_KEY_ID
+  const credentials = profile && !process.env.CI
     ? fromSSO({ profile })
     : undefined;
 

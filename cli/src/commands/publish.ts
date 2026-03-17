@@ -60,7 +60,7 @@ async function publishZip(
     `aws s3 cp /tmp/${service}-${sha}.zip s3://${bucket}/${key} --region ${region} ${profileFlag}`.trim(),
   );
 
-  const profile = process.env.AWS_ACCESS_KEY_ID ? undefined : profileFlag.replace("--profile ", "");
+  const profile = process.env.CI ? undefined : profileFlag.replace("--profile ", "");
   await setArtifactS3Tags(bucket, key, { status: "dev", builtBy: detectDeployer() }, region, profile);
 
   return {

@@ -76,7 +76,7 @@ export class PulumiEngine implements IacEngine {
   private login(opts: IacInitOpts): void {
     const bucket = resolveStateBucket(opts.root, opts.stage);
     const region = resolveRegion(opts.root, opts.stage);
-    const profileParam = process.env.AWS_ACCESS_KEY_ID
+    const profileParam = process.env.CI
       ? ""
       : `&profile=${resolveProfile(opts.root, opts.stage)}`;
     exec(
@@ -110,7 +110,7 @@ export class PulumiEngine implements IacEngine {
       ...opts.vars,
     };
     // Only set aws:profile when running locally (not in CI with env var credentials)
-    if (!process.env.AWS_ACCESS_KEY_ID) {
+    if (!process.env.CI) {
       vars["aws:profile"] = resolveProfile(opts.root, opts.stage);
     }
     return Object.entries(vars)

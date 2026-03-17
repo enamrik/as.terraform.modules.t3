@@ -125,7 +125,7 @@ function loginAndSelectStack(
   profile: string,
 ): void {
   exec(
-    `pulumi login "s3://${bucket}?region=${region}&awssdk=v2${process.env.AWS_ACCESS_KEY_ID ? "" : `&profile=${profile}`}"`,
+    `pulumi login "s3://${bucket}?region=${region}&awssdk=v2${process.env.CI ? "" : `&profile=${profile}`}"`,
     { silent: true },
   );
 
@@ -144,7 +144,7 @@ function runPulumiUp(
   profile: string,
 ): void {
   exec(
-    `pulumi up --yes --config aws:region=${region}${process.env.AWS_ACCESS_KEY_ID ? "" : ` --config aws:profile=${profile}`} --config stage=${stage}`,
+    `pulumi up --yes --config aws:region=${region}${process.env.CI ? "" : ` --config aws:profile=${profile}`} --config stage=${stage}`,
     { cwd: workDir },
   );
 }

@@ -116,7 +116,7 @@ export function resolveProfile(root: string, stage: string): string {
 }
 
 export function awsProfileFlag(root: string, stage: string): string {
-  if (process.env.AWS_ACCESS_KEY_ID) return "";
+  if (process.env.CI) return "";
   return `--profile ${resolveProfile(root, stage)}`;
 }
 
