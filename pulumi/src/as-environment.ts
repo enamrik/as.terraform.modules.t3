@@ -216,7 +216,7 @@ function createApiGateway(ctx: EnvContext, config: ApiGatewayConfig): void {
     { parent: ctx.parent },
   );
 
-  new aws.apigatewayv2.Stage(
+  const defaultStage = new aws.apigatewayv2.Stage(
     `${ctx.name}-default-stage`,
     {
       apiId: apiGateway.id,
@@ -287,7 +287,7 @@ function createApiGateway(ctx: EnvContext, config: ApiGatewayConfig): void {
     {
       apiId: apiGateway.id,
       domainName: domainName.id,
-      stage: "$default",
+      stage: defaultStage.id,
     },
     { parent: ctx.parent },
   );
