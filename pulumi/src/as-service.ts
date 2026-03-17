@@ -51,14 +51,12 @@ const DEFAULT_OVERRIDES: Overrides<AsServiceOverrides> = {
     deploymentConfig: "CodeDeployDefault.LambdaAllAtOnce",
   },
   "pr-*": {
-    memory: 256,
     timeout: 15,
     desiredCount: 1,
     logRetentionDays: 3,
     deploymentConfig: "CodeDeployDefault.LambdaAllAtOnce",
   },
   "local-*": {
-    memory: 256,
     timeout: 15,
     desiredCount: 1,
     logRetentionDays: 1,
