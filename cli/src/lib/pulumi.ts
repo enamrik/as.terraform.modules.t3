@@ -59,7 +59,10 @@ export class PulumiEngine implements IacEngine {
     const cwd = resolveIacRoot(opts.root, opts.type, opts.serviceName);
     const configArgs = this.buildConfig(opts);
     const approve = opts.autoApprove ? "--yes" : "";
-    exec(`pulumi ${action} ${configArgs} ${approve}`.trim(), { cwd });
+    exec(`pulumi ${action} ${configArgs} ${approve}`.trim(), {
+      cwd,
+      env: { PULUMI_CONFIG_PASSPHRASE: process.env.PULUMI_CONFIG_PASSPHRASE ?? "" },
+    });
   }
 
   private async runAsync(action: string, opts: IacRunOpts & { prefix?: string }): Promise<void> {
@@ -70,6 +73,7 @@ export class PulumiEngine implements IacEngine {
     await execAsync(`pulumi ${action} ${configArgs} ${approve}`.trim(), {
       cwd,
       prefix: opts.prefix,
+      env: { PULUMI_CONFIG_PASSPHRASE: process.env.PULUMI_CONFIG_PASSPHRASE ?? "" },
     });
   }
 

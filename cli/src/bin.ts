@@ -55,18 +55,16 @@ program
 
 program
   .command("ship <service>")
-  .description("Build, publish, and deploy a service (artifact → deploy)")
+  .description("Build, publish, and deploy a service (artifact → component:apply → deploy)")
   .option("--stage <stage>", "Target stage", DEFAULT_STAGE)
   .option("--env <env>", "Target environment")
-  .option("--infra", "Apply infrastructure instead of code deploy", false)
   .option("--dirty", "Allow dirty-tree builds", false)
   .option("--platform <arch>", "Docker platform architecture", "arm64")
-  .action(async (service: string, opts: { stage: string; env?: string; infra: boolean; dirty: boolean; platform: string }) => {
+  .action(async (service: string, opts: { stage: string; env?: string; dirty: boolean; platform: string }) => {
     await shipCommand({
       service,
       stage: opts.stage,
       envName: opts.env,
-      infra: opts.infra,
       dirty: opts.dirty,
       platform: opts.platform,
     });

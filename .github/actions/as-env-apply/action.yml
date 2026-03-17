@@ -1,0 +1,16 @@
+name: AS Env Apply
+description: Apply shared environment infrastructure (idempotent)
+
+inputs:
+  stage:
+    description: Target stage (dev, staging, prod)
+    required: true
+  env:
+    description: Environment name
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - run: ascli env:apply --stage ${{ inputs.stage }} --env ${{ inputs.env }} -y
+      shell: bash

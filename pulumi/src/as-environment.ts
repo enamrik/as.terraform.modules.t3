@@ -129,6 +129,19 @@ export class Env extends pulumi.ComponentResource {
 }
 
 // ---------------------------------------------------------------------------
+// EcsRef — returned by EnvRef.ecs()
+// ---------------------------------------------------------------------------
+
+export interface EcsRef {
+  clusterArn: pulumi.Output<string>;
+  albArn: pulumi.Output<string>;
+  albDnsName: pulumi.Output<string>;
+  albSgId: pulumi.Output<string>;
+  albListenerArn: pulumi.Output<string>;
+  albTestListenerArn: pulumi.Output<string>;
+}
+
+// ---------------------------------------------------------------------------
 // EnvRef — component side (reads SSM, no resources created)
 // ---------------------------------------------------------------------------
 
@@ -152,8 +165,15 @@ export class EnvRef {
     };
   }
 
-  ecs(): { clusterArn: pulumi.Output<string> } {
-    return { clusterArn: this.ssm("ecs-cluster-arn") };
+  ecs(): EcsRef {
+    return {
+      clusterArn: this.ssm("ecs-cluster-arn"),
+      albArn: this.ssm("alb-arn"),
+      albDnsName: this.ssm("alb-dns-name"),
+      albSgId: this.ssm("alb-sg-id"),
+      albListenerArn: this.ssm("alb-listener-arn"),
+      albTestListenerArn: this.ssm("alb-test-listener-arn"),
+    };
   }
 
   private ssm(key: string): pulumi.Output<string> {
@@ -305,10 +325,16 @@ function createApiGateway(ctx: EnvContext, config: ApiGatewayConfig): void {
     { name: pulumi.interpolate`${ctx.ssmPrefix}/vpc-link-id`, type: "String", value: vpcLink.id, tags: ctx.tags },
     { parent: ctx.parent },
   );
+
+  new aws.ssm.Parameter(
+    `${ctx.name}-ssm-vpc-link-sg`,
+    { name: pulumi.interpolate`${ctx.ssmPrefix}/vpc-link-sg-id`, type: "String", value: vpcLinkSg.id, tags: ctx.tags },
+    { parent: ctx.parent },
+  );
 }
 
 // ---------------------------------------------------------------------------
-// ECS Cluster creation
+// ECS Cluster + shared ALB creation
 // ---------------------------------------------------------------------------
 
 function createEcsCluster(ctx: EnvContext, config: EcsConfig): void {
@@ -325,6 +351,107 @@ function createEcsCluster(ctx: EnvContext, config: EcsConfig): void {
   new aws.ssm.Parameter(
     `${ctx.name}-ssm-ecs-cluster`,
     { name: pulumi.interpolate`${ctx.ssmPrefix}/ecs-cluster-arn`, type: "String", value: cluster.arn, tags: ctx.tags },
+    { parent: ctx.parent },
+  );
+
+  // Shared ALB — all ECS services register target groups here
+  const albSg = new aws.ec2.SecurityGroup(
+    `${ctx.name}-alb-sg`,
+    {
+      name: pulumi.interpolate`${ctx.namePrefix}-alb`,
+      description: "Shared ALB security group",
+      vpcId: ctx.foundation.vpcId,
+      ingress: [
+        { fromPort: 80, toPort: 80, protocol: "tcp", cidrBlocks: ["0.0.0.0/0"] },
+        { fromPort: 443, toPort: 443, protocol: "tcp", cidrBlocks: ["0.0.0.0/0"] },
+      ],
+      egress: [{ fromPort: 0, toPort: 0, protocol: "-1", cidrBlocks: ["0.0.0.0/0"] }],
+      tags: ctx.tags,
+    },
+    { parent: ctx.parent },
+  );
+
+  const alb = new aws.lb.LoadBalancer(
+    `${ctx.name}-alb`,
+    {
+      name: ctx.namePrefix,
+      internal: true,
+      loadBalancerType: "application",
+      securityGroups: [albSg.id],
+      subnets: ctx.foundation.privateSubnetIds,
+      tags: ctx.tags,
+    },
+    { parent: ctx.parent },
+  );
+
+  // Default target group (returns 404 for unmatched paths)
+  const defaultTg = new aws.lb.TargetGroup(
+    `${ctx.name}-alb-default-tg`,
+    {
+      name: pulumi.interpolate`${ctx.namePrefix}-default`,
+      port: 80,
+      protocol: "HTTP",
+      targetType: "ip",
+      vpcId: ctx.foundation.vpcId,
+      tags: ctx.tags,
+    },
+    { parent: ctx.parent },
+  );
+
+  // Prod listener (port 80) — CodeDeploy shifts traffic here
+  const prodListener = new aws.lb.Listener(
+    `${ctx.name}-alb-listener`,
+    {
+      loadBalancerArn: alb.arn,
+      port: 80,
+      protocol: "HTTP",
+      defaultActions: [{ type: "fixed-response", fixedResponse: { contentType: "text/plain", messageBody: "Not Found", statusCode: "404" } }],
+      tags: ctx.tags,
+    },
+    { parent: ctx.parent },
+  );
+
+  // Test listener (port 8080) — CodeDeploy validates here before shifting prod
+  const testListener = new aws.lb.Listener(
+    `${ctx.name}-alb-test-listener`,
+    {
+      loadBalancerArn: alb.arn,
+      port: 8080,
+      protocol: "HTTP",
+      defaultActions: [{ type: "fixed-response", fixedResponse: { contentType: "text/plain", messageBody: "Not Found", statusCode: "404" } }],
+      tags: ctx.tags,
+    },
+    { parent: ctx.parent },
+  );
+
+  // SSM — publish for components to discover
+  new aws.ssm.Parameter(
+    `${ctx.name}-ssm-alb-arn`,
+    { name: pulumi.interpolate`${ctx.ssmPrefix}/alb-arn`, type: "String", value: alb.arn, tags: ctx.tags },
+    { parent: ctx.parent },
+  );
+
+  new aws.ssm.Parameter(
+    `${ctx.name}-ssm-alb-dns`,
+    { name: pulumi.interpolate`${ctx.ssmPrefix}/alb-dns-name`, type: "String", value: alb.dnsName, tags: ctx.tags },
+    { parent: ctx.parent },
+  );
+
+  new aws.ssm.Parameter(
+    `${ctx.name}-ssm-alb-sg`,
+    { name: pulumi.interpolate`${ctx.ssmPrefix}/alb-sg-id`, type: "String", value: albSg.id, tags: ctx.tags },
+    { parent: ctx.parent },
+  );
+
+  new aws.ssm.Parameter(
+    `${ctx.name}-ssm-alb-listener`,
+    { name: pulumi.interpolate`${ctx.ssmPrefix}/alb-listener-arn`, type: "String", value: prodListener.arn, tags: ctx.tags },
+    { parent: ctx.parent },
+  );
+
+  new aws.ssm.Parameter(
+    `${ctx.name}-ssm-alb-test-listener`,
+    { name: pulumi.interpolate`${ctx.ssmPrefix}/alb-test-listener-arn`, type: "String", value: testListener.arn, tags: ctx.tags },
     { parent: ctx.parent },
   );
 }

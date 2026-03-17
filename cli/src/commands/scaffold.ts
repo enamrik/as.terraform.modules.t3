@@ -78,8 +78,7 @@ new AsService("${name}", {
   stage,
   envName,
   serviceName: "${name}",
-  memory: 512,
-  sha: config.get("sha"),
+  runtime: { lambda: { sha: config.get("sha") } },
   connections: [
     env.gateway(),
   ],

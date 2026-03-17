@@ -1,0 +1,36 @@
+name: AS Setup
+description: Checkout, install dependencies, setup CLI, and configure AWS credentials
+
+inputs:
+  stage:
+    description: Target stage (dev, staging, prod)
+    required: true
+  role-arn:
+    description: AWS IAM role ARN to assume via OIDC
+    required: true
+  node-version:
+    description: Node.js version
+    required: false
+    default: "20"
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/checkout@v4
+
+    - uses: pnpm/action-setup@v4
+
+    - uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+        cache: pnpm
+
+    - run: pnpm install --frozen-lockfile
+      shell: bash
+
+    - uses: enamrik/as.terraform.modules.t3/.github/actions/setup-as-cli@main
+
+    - uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ inputs.role-arn }}
+        aws-region: us-east-1

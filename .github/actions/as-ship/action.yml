@@ -1,0 +1,23 @@
+name: AS Ship
+description: Ship a single service (artifact + infrastructure + deploy)
+
+inputs:
+  service:
+    description: Service name to ship
+    required: true
+  stage:
+    description: Target stage (dev, staging, prod)
+    required: true
+  env:
+    description: Environment name
+    required: true
+  platform:
+    description: Docker platform architecture
+    required: false
+    default: arm64
+
+runs:
+  using: composite
+  steps:
+    - run: ascli ship ${{ inputs.service }} --stage ${{ inputs.stage }} --env ${{ inputs.env }} --platform ${{ inputs.platform }}
+      shell: bash

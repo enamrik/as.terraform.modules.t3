@@ -1,9 +1,8 @@
 /**
- * ascli ship <service> --stage <stage> [--env <env>] [--infra] [--dirty]
+ * ascli ship <service> --stage <stage> [--env <env>] [--dirty]
  *
  * Build, publish, and deploy a service in one shot.
- * Default: artifact → CodeDeploy (fast code path).
- * With --infra: artifact → component:apply → CodeDeploy (infrastructure + code).
+ * Always includes infrastructure: artifact → component:apply → CodeDeploy.
  */
 
 import {
@@ -19,7 +18,6 @@ export type ShipOptions = {
   service: string;
   stage: string;
   envName?: string;
-  infra?: boolean;
   dirty?: boolean;
   platform?: string;
 };
@@ -27,7 +25,7 @@ export type ShipOptions = {
 export async function shipCommand(opts: ShipOptions): Promise<void> {
   const envName = resolveEnvName(opts.stage, opts.envName);
 
-  console.log(`Shipping ${opts.service} → ${opts.stage}/${envName}${opts.infra ? " (infra)" : ""}\n`);
+  console.log(`Shipping ${opts.service} → ${opts.stage}/${envName}\n`);
 
   const result = await artifactCommand({
     service: opts.service,
@@ -36,19 +34,17 @@ export async function shipCommand(opts: ShipOptions): Promise<void> {
     platform: opts.platform,
   });
 
-  if (opts.infra) {
-    const engine = resolveEngine();
-    componentApplyCommand(
-      {
-        stage: opts.stage,
-        envName,
-        sha: result.artifactSha,
-        component: opts.service,
-        autoApprove: true,
-      },
-      engine,
-    );
-  }
+  const engine = resolveEngine();
+  componentApplyCommand(
+    {
+      stage: opts.stage,
+      envName,
+      sha: result.artifactSha,
+      component: opts.service,
+      autoApprove: true,
+    },
+    engine,
+  );
 
   await deployCommand({
     service: opts.service,

@@ -145,6 +145,6 @@ function runPulumiUp(
 ): void {
   exec(
     `pulumi up --yes --config aws:region=${region}${process.env.CI ? "" : ` --config aws:profile=${profile}`} --config stage=${stage}`,
-    { cwd: workDir },
+    { cwd: workDir, env: { PULUMI_CONFIG_PASSPHRASE: process.env.PULUMI_CONFIG_PASSPHRASE ?? "" } },
   );
 }

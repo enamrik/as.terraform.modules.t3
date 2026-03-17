@@ -2,7 +2,7 @@
  * ascli promote --to <stage> [--service <svc>] [--force]
  *
  * Promotes staging-tagged artifacts to a target stage.
- * Reads TAG records for "staging", deploys each to the target, updates TAG for target.
+ * Runs env:apply once, then for each service: component:apply → deploy.
  */
 
 import { detectDeployer } from "../lib/shell.js";
@@ -15,8 +15,11 @@ import {
   resolveRegion,
   resolveSystem,
 } from "../lib/conventions.js";
+import { resolveEngine } from "../lib/resolve-engine.js";
 import { Manifest } from "../lib/manifest.js";
 import { deployCommand } from "./deploy.js";
+import { envApplyCommand } from "./env.js";
+import { componentApplyCommand } from "./component.js";
 
 export type PromoteOptions = {
   to: string;
@@ -51,7 +54,12 @@ export async function promoteCommand(opts: PromoteOptions): Promise<void> {
   }
 
   const targetEnv = resolveEnvName(opts.to, undefined);
+  const engine = resolveEngine();
+
   console.log(`Promoting ${tags.length} service(s) → ${opts.to}/${targetEnv}\n`);
+
+  // Apply shared environment infrastructure once before deploying services
+  envApplyCommand({ stage: opts.to, envName: targetEnv, autoApprove: true }, engine);
 
   for (const tag of tags) {
     // Check for rejected artifacts
@@ -65,6 +73,18 @@ export async function promoteCommand(opts: PromoteOptions): Promise<void> {
     }
 
     console.log(`  ${tag.service}@${tag.sha}`);
+
+    // Apply component infrastructure before deploying
+    componentApplyCommand(
+      {
+        stage: opts.to,
+        envName: targetEnv,
+        sha: tag.sha,
+        component: tag.service,
+        autoApprove: true,
+      },
+      engine,
+    );
 
     await deployCommand({
       service: tag.service,
