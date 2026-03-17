@@ -21,6 +21,7 @@ export type ShipOptions = {
   envName?: string;
   infra?: boolean;
   dirty?: boolean;
+  platform?: string;
 };
 
 export async function shipCommand(opts: ShipOptions): Promise<void> {
@@ -32,6 +33,7 @@ export async function shipCommand(opts: ShipOptions): Promise<void> {
     service: opts.service,
     stage: opts.stage,
     dirty: opts.dirty,
+    platform: opts.platform,
   });
 
   if (opts.infra) {

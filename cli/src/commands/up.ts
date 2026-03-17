@@ -33,6 +33,7 @@ export type UpOptions = {
   yes?: boolean;
   from?: string;
   dirty?: boolean;
+  platform?: string;
 };
 
 export async function upCommand(opts: UpOptions): Promise<void> {
@@ -99,6 +100,7 @@ export async function upCommand(opts: UpOptions): Promise<void> {
           service,
           stage: opts.stage,
           dirty: opts.dirty,
+          platform: opts.platform,
         }).then((result) => ({ service, result })),
       ),
     );

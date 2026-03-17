@@ -60,13 +60,15 @@ program
   .option("--env <env>", "Target environment")
   .option("--infra", "Apply infrastructure instead of code deploy", false)
   .option("--dirty", "Allow dirty-tree builds", false)
-  .action(async (service: string, opts: { stage: string; env?: string; infra: boolean; dirty: boolean }) => {
+  .option("--platform <arch>", "Docker platform architecture", "arm64")
+  .action(async (service: string, opts: { stage: string; env?: string; infra: boolean; dirty: boolean; platform: string }) => {
     await shipCommand({
       service,
       stage: opts.stage,
       envName: opts.env,
       infra: opts.infra,
       dirty: opts.dirty,
+      platform: opts.platform,
     });
   });
 
@@ -80,13 +82,15 @@ program
   .option("-y, --yes", "Auto-approve", false)
   .option("--from <tag>", "Clone from tagged artifacts (e.g., staging)")
   .option("--dirty", "Allow dirty-tree builds", false)
-  .action(async (opts: { stage: string; env?: string; yes: boolean; from?: string; dirty: boolean }) => {
+  .option("--platform <arch>", "Docker platform architecture", "arm64")
+  .action(async (opts: { stage: string; env?: string; yes: boolean; from?: string; dirty: boolean; platform: string }) => {
     await upCommand({
       stage: opts.stage,
       envName: opts.env,
       yes: opts.yes,
       from: opts.from,
       dirty: opts.dirty,
+      platform: opts.platform,
     });
   });
 
