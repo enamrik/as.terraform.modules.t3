@@ -57,6 +57,7 @@ function generateStaticsProgram(
   name: "${r.repo}",
   imageScanningConfiguration: { scanOnPush: true },
   imageTagMutability: "MUTABLE",
+  forceDelete: true,
   tags: { "managed-by": "ascli", system: "${system}" },
 });`,
     )
