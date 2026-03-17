@@ -30,6 +30,8 @@ export class PulumiEngine implements IacEngine {
     this.ensureProjectFiles(cwd, this.projectName(opts));
     this.selectOrCreateStack(cwd, opts);
     exec("npm install --no-package-lock", { cwd });
+    // In CI, @as/pulumi is globally linked — wire it into this project
+    exec("npm link @as/pulumi 2>/dev/null || true", { cwd, silent: true });
   }
 
   apply(opts: IacRunOpts): void {
