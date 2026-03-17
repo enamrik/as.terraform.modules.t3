@@ -1,356 +1,149 @@
 /**
- * AsEnvironment — creates an environment namespace within a stage.
+ * Env — composable environment resource.
  *
- * Reads foundation SSM parameters and creates:
- * - API Gateway HTTP API with CORS
- * - CloudWatch log group for API Gateway
- * - ECS Fargate cluster
- * - VPC Link (API Gateway → private subnets)
- * - Custom domain ({env_name}.{domain})
- * - Route53 alias record
- * - SSM parameters for components to discover
+ * The env layer declares what shared infrastructure exists via `provides`.
+ * Only the resources you opt into get created. Components discover them
+ * via Env.ref() which reads SSM parameters.
+ *
+ * Creation (env infra):
+ *   const env = new Env("env", { stage, envName, provides: { apiGateway: {}, ecs: {} } });
+ *
+ * Reference (component infra):
+ *   const env = Env.ref(stage, envName);
+ *   new AsService("case-api", { ..., connections: [env.gateway()] });
  */
 
 import * as aws from "@pulumi/aws";
 import * as pulumi from "@pulumi/pulumi";
 import type { Connection, HasRoutes } from "./connections.js";
 
-export interface AsEnvironmentArgs {
+// ---------------------------------------------------------------------------
+// Provides config — each key opts into a shared resource
+// ---------------------------------------------------------------------------
+
+export interface ApiGatewayConfig {
+  cors?: {
+    allowOrigins?: string[];
+    allowMethods?: string[];
+    allowHeaders?: string[];
+    maxAge?: number;
+  };
+  logRetentionDays?: number;
+}
+
+export interface EcsConfig {
+  containerInsights?: boolean;
+}
+
+export interface ProvidesConfig {
+  apiGateway?: ApiGatewayConfig;
+  ecs?: EcsConfig;
+}
+
+// ---------------------------------------------------------------------------
+// Env args
+// ---------------------------------------------------------------------------
+
+export interface EnvArgs {
   stage: pulumi.Input<string>;
   envName: pulumi.Input<string>;
+  provides?: ProvidesConfig;
   tags?: pulumi.Input<Record<string, string>>;
 }
 
-export class AsEnvironment extends pulumi.ComponentResource {
-  public readonly apiGatewayId: pulumi.Output<string>;
-  public readonly apiGatewayEndpoint: pulumi.Output<string>;
-  public readonly ecsClusterArn: pulumi.Output<string>;
-  public readonly vpcLinkId: pulumi.Output<string>;
+// ---------------------------------------------------------------------------
+// Shared context for internal resource creation
+// ---------------------------------------------------------------------------
+
+interface EnvContext {
+  name: string;
+  stage: pulumi.Output<string>;
+  envName: pulumi.Output<string>;
+  namePrefix: pulumi.Output<string>;
+  ssmPrefix: pulumi.Output<string>;
+  tags: pulumi.Output<Record<string, string>>;
+  parent: pulumi.Resource;
+  foundation: FoundationParams;
+}
+
+interface FoundationParams {
+  vpcId: pulumi.Output<string>;
+  privateSubnetIds: pulumi.Output<string[]>;
+  hostedZoneId: pulumi.Output<string>;
+  domain: pulumi.Output<string>;
+  certificateArn: pulumi.Output<string>;
+}
+
+// ---------------------------------------------------------------------------
+// Env — creation side
+// ---------------------------------------------------------------------------
+
+export class Env extends pulumi.ComponentResource {
   public readonly domain: pulumi.Output<string>;
 
-  constructor(name: string, args: AsEnvironmentArgs, opts?: pulumi.ComponentResourceOptions) {
-    super("as:environment:AsEnvironment", name, {}, opts);
+  constructor(name: string, args: EnvArgs, opts?: pulumi.ComponentResourceOptions) {
+    super("as:environment:Env", name, {}, opts);
 
     const stage = pulumi.output(args.stage);
     const envName = pulumi.output(args.envName);
     const namePrefix = pulumi.interpolate`${stage}-${envName}`;
+    const ssmPrefix = pulumi.interpolate`/${stage}/${envName}`;
+    const provides = args.provides ?? {};
 
-    const defaultTags = pulumi.output(args.tags ?? {}).apply((extra) => ({
-      environment: stage,
-      env_name: envName,
-      project: "as-platform",
+    const tags = pulumi.all([stage, envName, pulumi.output(args.tags ?? {})]).apply(([s, e, extra]): Record<string, string> => ({
+      environment: s,
+      env_name: e,
       "managed-by": "pulumi",
       ...extra,
     }));
 
-    // -------------------------------------------------------------------------
-    // Read foundation SSM parameters
-    // -------------------------------------------------------------------------
+    const foundation = readFoundation(stage);
 
-    const vpcId = stage
-      .apply((s) => aws.ssm.getParameter({ name: `/${s}/foundation/vpc-id` }))
-      .apply((p) => p.value);
+    this.domain = pulumi.interpolate`${envName}.${foundation.domain}`;
 
-    const privateSubnetIds = stage
-      .apply((s) => aws.ssm.getParameter({ name: `/${s}/foundation/private-subnet-ids` }))
-      .apply((p) => JSON.parse(p.value) as string[]);
-
-    const hostedZoneId = stage
-      .apply((s) => aws.ssm.getParameter({ name: `/${s}/foundation/hosted-zone-id` }))
-      .apply((p) => p.value);
-
-    const foundationDomain = stage
-      .apply((s) => aws.ssm.getParameter({ name: `/${s}/foundation/domain` }))
-      .apply((p) => p.value);
-
-    const certificateArn = stage
-      .apply((s) => aws.ssm.getParameter({ name: `/${s}/foundation/certificate-arn` }))
-      .apply((p) => p.value);
-
-    // -------------------------------------------------------------------------
-    // API Gateway HTTP API v2
-    // -------------------------------------------------------------------------
-
-    const apiGateway = new aws.apigatewayv2.Api(
-      `${name}-api`,
-      {
-        name: namePrefix,
-        protocolType: "HTTP",
-        corsConfiguration: {
-          allowOrigins: ["*"],
-          allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-          allowHeaders: ["Content-Type", "Authorization", "AS-Platform-Version"],
-          maxAge: 3600,
-        },
-        tags: defaultTags,
-      },
-      { parent: this },
-    );
-
-    const logGroup = new aws.cloudwatch.LogGroup(
-      `${name}-api-logs`,
-      {
-        name: pulumi.interpolate`/aws/apigateway/${namePrefix}`,
-        retentionInDays: 30,
-        tags: defaultTags,
-      },
-      { parent: this },
-    );
-
-    new aws.apigatewayv2.Stage(
-      `${name}-default-stage`,
-      {
-        apiId: apiGateway.id,
-        name: "$default",
-        autoDeploy: true,
-        accessLogSettings: {
-          destinationArn: logGroup.arn,
-          format: JSON.stringify({
-            requestId: "$context.requestId",
-            ip: "$context.identity.sourceIp",
-            requestTime: "$context.requestTime",
-            httpMethod: "$context.httpMethod",
-            routeKey: "$context.routeKey",
-            status: "$context.status",
-            protocol: "$context.protocol",
-            responseLength: "$context.responseLength",
-            errorMessage: "$context.error.message",
-          }),
-        },
-        tags: defaultTags,
-      },
-      { parent: this },
-    );
-
-    // -------------------------------------------------------------------------
-    // ECS Fargate Cluster
-    // -------------------------------------------------------------------------
-
-    const ecsCluster = new aws.ecs.Cluster(
-      `${name}-ecs`,
-      {
-        name: namePrefix,
-        settings: [{ name: "containerInsights", value: "enabled" }],
-        tags: defaultTags,
-      },
-      { parent: this },
-    );
-
-    // -------------------------------------------------------------------------
-    // VPC Link (API Gateway → private subnets)
-    // -------------------------------------------------------------------------
-
-    const vpcLinkSg = new aws.ec2.SecurityGroup(
-      `${name}-vpc-link-sg`,
-      {
-        name: pulumi.interpolate`${namePrefix}-vpc-link`,
-        description: "Security group for API Gateway VPC Link",
-        vpcId: vpcId,
-        egress: [
-          {
-            fromPort: 0,
-            toPort: 0,
-            protocol: "-1",
-            cidrBlocks: ["0.0.0.0/0"],
-          },
-        ],
-        tags: defaultTags,
-      },
-      { parent: this },
-    );
-
-    const vpcLink = new aws.apigatewayv2.VpcLink(
-      `${name}-vpc-link`,
-      {
-        name: namePrefix,
-        securityGroupIds: [vpcLinkSg.id],
-        subnetIds: privateSubnetIds,
-        tags: defaultTags,
-      },
-      { parent: this },
-    );
-
-    // -------------------------------------------------------------------------
-    // Custom Domain — {env_name}.{domain}
-    // -------------------------------------------------------------------------
-
-    const envDomain = pulumi.interpolate`${envName}.${foundationDomain}`;
-
-    const domainName = new aws.apigatewayv2.DomainName(
-      `${name}-domain`,
-      {
-        domainName: envDomain,
-        domainNameConfiguration: {
-          certificateArn: certificateArn,
-          endpointType: "REGIONAL",
-          securityPolicy: "TLS_1_2",
-        },
-        tags: defaultTags,
-      },
-      { parent: this },
-    );
-
-    new aws.apigatewayv2.ApiMapping(
-      `${name}-api-mapping`,
-      {
-        apiId: apiGateway.id,
-        domainName: domainName.id,
-        stage: "$default",
-      },
-      { parent: this },
-    );
-
-    new aws.route53.Record(
-      `${name}-dns`,
-      {
-        zoneId: hostedZoneId,
-        name: envDomain,
-        type: "A",
-        aliases: [
-          {
-            name: domainName.domainNameConfiguration.apply(
-              (c) => c.targetDomainName,
-            ),
-            zoneId: domainName.domainNameConfiguration.apply(
-              (c) => c.hostedZoneId,
-            ),
-            evaluateTargetHealth: false,
-          },
-        ],
-      },
-      { parent: this },
-    );
-
-    // -------------------------------------------------------------------------
-    // SSM Parameters — environment outputs for components
-    // -------------------------------------------------------------------------
-
-    const ssmPrefix = pulumi.interpolate`/${stage}/${envName}`;
-
-    new aws.ssm.Parameter(
-      `${name}-ssm-api-gw-id`,
-      {
-        name: pulumi.interpolate`${ssmPrefix}/api-gateway-id`,
-        type: "String",
-        value: apiGateway.id,
-        tags: defaultTags,
-      },
-      { parent: this },
-    );
-
-    new aws.ssm.Parameter(
-      `${name}-ssm-api-gw-endpoint`,
-      {
-        name: pulumi.interpolate`${ssmPrefix}/api-gateway-endpoint`,
-        type: "String",
-        value: apiGateway.apiEndpoint,
-        tags: defaultTags,
-      },
-      { parent: this },
-    );
-
-    new aws.ssm.Parameter(
-      `${name}-ssm-ecs-cluster`,
-      {
-        name: pulumi.interpolate`${ssmPrefix}/ecs-cluster-arn`,
-        type: "String",
-        value: ecsCluster.arn,
-        tags: defaultTags,
-      },
-      { parent: this },
-    );
-
-    new aws.ssm.Parameter(
-      `${name}-ssm-vpc-link`,
-      {
-        name: pulumi.interpolate`${ssmPrefix}/vpc-link-id`,
-        type: "String",
-        value: vpcLink.id,
-        tags: defaultTags,
-      },
-      { parent: this },
-    );
-
-    // -------------------------------------------------------------------------
-    // Outputs
-    // -------------------------------------------------------------------------
-
-    this.apiGatewayId = apiGateway.id;
-    this.apiGatewayEndpoint = apiGateway.apiEndpoint;
-    this.ecsClusterArn = ecsCluster.arn;
-    this.vpcLinkId = vpcLink.id;
-    this.domain = envDomain;
-
-    this.registerOutputs({
-      apiGatewayId: this.apiGatewayId,
-      apiGatewayEndpoint: this.apiGatewayEndpoint,
-      ecsClusterArn: this.ecsClusterArn,
-      vpcLinkId: this.vpcLinkId,
-      domain: this.domain,
-    });
-  }
-
-  /**
-   * Returns a connection that attaches a service to this environment's API Gateway.
-   */
-  gateway(opts?: { routes?: string[] }): Connection<HasRoutes> {
-    const apiGatewayId = this.apiGatewayId;
-    const vpcLinkId = this.vpcLinkId;
-    const routes = opts?.routes;
-    return {
-      bind(target) {
-        target.addRoute({ apiGatewayId, vpcLinkId, routes });
-      },
+    const ctx: EnvContext = {
+      name,
+      stage,
+      envName,
+      namePrefix,
+      ssmPrefix,
+      tags,
+      parent: this,
+      foundation,
     };
+
+    if (provides.apiGateway !== undefined) {
+      createApiGateway(ctx, provides.apiGateway);
+    }
+
+    if (provides.ecs !== undefined) {
+      createEcsCluster(ctx, provides.ecs);
+    }
+
+    this.registerOutputs({ domain: this.domain });
   }
 
-  /**
-   * Creates a lightweight reference to an environment deployed in a separate stack.
-   * Reads SSM parameters to discover the environment's API Gateway, ECS cluster, etc.
-   */
-  static ref(stage: pulumi.Input<string>, envName: pulumi.Input<string>): AsEnvironmentRef {
-    return new AsEnvironmentRef(stage, envName);
+  static ref(stage: pulumi.Input<string>, envName: pulumi.Input<string>): EnvRef {
+    return new EnvRef(stage, envName);
   }
 }
 
-/**
- * Lightweight cross-stack reference to an environment.
- * Reads SSM parameters — no resources created.
- */
-export class AsEnvironmentRef {
-  public readonly apiGatewayId: pulumi.Output<string>;
-  public readonly apiGatewayEndpoint: pulumi.Output<string>;
-  public readonly ecsClusterArn: pulumi.Output<string>;
-  public readonly vpcLinkId: pulumi.Output<string>;
+// ---------------------------------------------------------------------------
+// EnvRef — component side (reads SSM, no resources created)
+// ---------------------------------------------------------------------------
+
+export class EnvRef {
+  private readonly ssmPrefix: pulumi.Output<string>;
 
   constructor(stage: pulumi.Input<string>, envName: pulumi.Input<string>) {
     const s = pulumi.output(stage);
     const e = pulumi.output(envName);
-    const prefix = pulumi.interpolate`/${s}/${e}`;
-
-    this.apiGatewayId = prefix
-      .apply((p) => aws.ssm.getParameter({ name: `${p}/api-gateway-id` }))
-      .apply((r) => r.value);
-
-    this.apiGatewayEndpoint = prefix
-      .apply((p) => aws.ssm.getParameter({ name: `${p}/api-gateway-endpoint` }))
-      .apply((r) => r.value);
-
-    this.ecsClusterArn = prefix
-      .apply((p) => aws.ssm.getParameter({ name: `${p}/ecs-cluster-arn` }))
-      .apply((r) => r.value);
-
-    this.vpcLinkId = prefix
-      .apply((p) => aws.ssm.getParameter({ name: `${p}/vpc-link-id` }))
-      .apply((r) => r.value);
+    this.ssmPrefix = pulumi.interpolate`/${s}/${e}`;
   }
 
-  /**
-   * Returns a connection that attaches a service to this environment's API Gateway.
-   */
   gateway(opts?: { routes?: string[] }): Connection<HasRoutes> {
-    const apiGatewayId = this.apiGatewayId;
-    const vpcLinkId = this.vpcLinkId;
+    const apiGatewayId = this.ssm("api-gateway-id");
+    const vpcLinkId = this.ssm("vpc-link-id");
     const routes = opts?.routes;
     return {
       bind(target) {
@@ -358,4 +151,204 @@ export class AsEnvironmentRef {
       },
     };
   }
+
+  ecs(): { clusterArn: pulumi.Output<string> } {
+    return { clusterArn: this.ssm("ecs-cluster-arn") };
+  }
+
+  private ssm(key: string): pulumi.Output<string> {
+    return this.ssmPrefix
+      .apply((p) => aws.ssm.getParameter({ name: `${p}/${key}` }))
+      .apply((r) => r.value);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// API Gateway creation
+// ---------------------------------------------------------------------------
+
+function createApiGateway(ctx: EnvContext, config: ApiGatewayConfig): void {
+  const cors = config.cors ?? {};
+
+  const apiGateway = new aws.apigatewayv2.Api(
+    `${ctx.name}-api`,
+    {
+      name: ctx.namePrefix,
+      protocolType: "HTTP",
+      corsConfiguration: {
+        allowOrigins: cors.allowOrigins ?? ["*"],
+        allowMethods: cors.allowMethods ?? ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allowHeaders: cors.allowHeaders ?? ["Content-Type", "Authorization"],
+        maxAge: cors.maxAge ?? 3600,
+      },
+      tags: ctx.tags,
+    },
+    { parent: ctx.parent },
+  );
+
+  const logGroup = new aws.cloudwatch.LogGroup(
+    `${ctx.name}-api-logs`,
+    {
+      name: pulumi.interpolate`/aws/apigateway/${ctx.namePrefix}`,
+      retentionInDays: config.logRetentionDays ?? 30,
+      tags: ctx.tags,
+    },
+    { parent: ctx.parent },
+  );
+
+  new aws.apigatewayv2.Stage(
+    `${ctx.name}-default-stage`,
+    {
+      apiId: apiGateway.id,
+      name: "$default",
+      autoDeploy: true,
+      accessLogSettings: {
+        destinationArn: logGroup.arn,
+        format: JSON.stringify({
+          requestId: "$context.requestId",
+          ip: "$context.identity.sourceIp",
+          requestTime: "$context.requestTime",
+          httpMethod: "$context.httpMethod",
+          routeKey: "$context.routeKey",
+          status: "$context.status",
+          protocol: "$context.protocol",
+          responseLength: "$context.responseLength",
+          errorMessage: "$context.error.message",
+        }),
+      },
+      tags: ctx.tags,
+    },
+    { parent: ctx.parent },
+  );
+
+  // VPC Link — bridges API Gateway into private subnets
+  const vpcLinkSg = new aws.ec2.SecurityGroup(
+    `${ctx.name}-vpc-link-sg`,
+    {
+      name: pulumi.interpolate`${ctx.namePrefix}-vpc-link`,
+      description: "Security group for API Gateway VPC Link",
+      vpcId: ctx.foundation.vpcId,
+      egress: [{ fromPort: 0, toPort: 0, protocol: "-1", cidrBlocks: ["0.0.0.0/0"] }],
+      tags: ctx.tags,
+    },
+    { parent: ctx.parent },
+  );
+
+  const vpcLink = new aws.apigatewayv2.VpcLink(
+    `${ctx.name}-vpc-link`,
+    {
+      name: ctx.namePrefix,
+      securityGroupIds: [vpcLinkSg.id],
+      subnetIds: ctx.foundation.privateSubnetIds,
+      tags: ctx.tags,
+    },
+    { parent: ctx.parent },
+  );
+
+  // Custom domain — {envName}.{foundationDomain}
+  const envDomain = pulumi.interpolate`${ctx.envName}.${ctx.foundation.domain}`;
+
+  const domainName = new aws.apigatewayv2.DomainName(
+    `${ctx.name}-domain`,
+    {
+      domainName: envDomain,
+      domainNameConfiguration: {
+        certificateArn: ctx.foundation.certificateArn,
+        endpointType: "REGIONAL",
+        securityPolicy: "TLS_1_2",
+      },
+      tags: ctx.tags,
+    },
+    { parent: ctx.parent },
+  );
+
+  new aws.apigatewayv2.ApiMapping(
+    `${ctx.name}-api-mapping`,
+    {
+      apiId: apiGateway.id,
+      domainName: domainName.id,
+      stage: "$default",
+    },
+    { parent: ctx.parent },
+  );
+
+  new aws.route53.Record(
+    `${ctx.name}-dns`,
+    {
+      zoneId: ctx.foundation.hostedZoneId,
+      name: envDomain,
+      type: "A",
+      aliases: [{
+        name: domainName.domainNameConfiguration.apply((c) => c.targetDomainName),
+        zoneId: domainName.domainNameConfiguration.apply((c) => c.hostedZoneId),
+        evaluateTargetHealth: false,
+      }],
+    },
+    { parent: ctx.parent },
+  );
+
+  // SSM — publish for components to discover
+  new aws.ssm.Parameter(
+    `${ctx.name}-ssm-api-gw-id`,
+    { name: pulumi.interpolate`${ctx.ssmPrefix}/api-gateway-id`, type: "String", value: apiGateway.id, tags: ctx.tags },
+    { parent: ctx.parent },
+  );
+
+  new aws.ssm.Parameter(
+    `${ctx.name}-ssm-api-gw-endpoint`,
+    { name: pulumi.interpolate`${ctx.ssmPrefix}/api-gateway-endpoint`, type: "String", value: apiGateway.apiEndpoint, tags: ctx.tags },
+    { parent: ctx.parent },
+  );
+
+  new aws.ssm.Parameter(
+    `${ctx.name}-ssm-vpc-link`,
+    { name: pulumi.interpolate`${ctx.ssmPrefix}/vpc-link-id`, type: "String", value: vpcLink.id, tags: ctx.tags },
+    { parent: ctx.parent },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// ECS Cluster creation
+// ---------------------------------------------------------------------------
+
+function createEcsCluster(ctx: EnvContext, config: EcsConfig): void {
+  const cluster = new aws.ecs.Cluster(
+    `${ctx.name}-ecs`,
+    {
+      name: ctx.namePrefix,
+      settings: [{ name: "containerInsights", value: config.containerInsights !== false ? "enabled" : "disabled" }],
+      tags: ctx.tags,
+    },
+    { parent: ctx.parent },
+  );
+
+  new aws.ssm.Parameter(
+    `${ctx.name}-ssm-ecs-cluster`,
+    { name: pulumi.interpolate`${ctx.ssmPrefix}/ecs-cluster-arn`, type: "String", value: cluster.arn, tags: ctx.tags },
+    { parent: ctx.parent },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Foundation SSM reads
+// ---------------------------------------------------------------------------
+
+function readFoundation(stage: pulumi.Output<string>): FoundationParams {
+  return {
+    vpcId: stage
+      .apply((s) => aws.ssm.getParameter({ name: `/${s}/foundation/vpc-id` }))
+      .apply((p) => p.value),
+    privateSubnetIds: stage
+      .apply((s) => aws.ssm.getParameter({ name: `/${s}/foundation/private-subnet-ids` }))
+      .apply((p) => JSON.parse(p.value) as string[]),
+    hostedZoneId: stage
+      .apply((s) => aws.ssm.getParameter({ name: `/${s}/foundation/hosted-zone-id` }))
+      .apply((p) => p.value),
+    domain: stage
+      .apply((s) => aws.ssm.getParameter({ name: `/${s}/foundation/domain` }))
+      .apply((p) => p.value),
+    certificateArn: stage
+      .apply((s) => aws.ssm.getParameter({ name: `/${s}/foundation/certificate-arn` }))
+      .apply((p) => p.value),
+  };
 }

@@ -3,7 +3,7 @@
  *
  * Build, publish, and deploy a service in one shot.
  * Default: artifact → CodeDeploy (fast code path).
- * With --infra: artifact → component:apply (infrastructure changes).
+ * With --infra: artifact → component:apply → CodeDeploy (infrastructure + code).
  */
 
 import {
@@ -46,14 +46,15 @@ export async function shipCommand(opts: ShipOptions): Promise<void> {
       },
       engine,
     );
-  } else {
-    await deployCommand({
-      service: opts.service,
-      stage: opts.stage,
-      envName,
-      sha: result.artifactSha,
-    });
   }
+
+  await deployCommand({
+    service: opts.service,
+    stage: opts.stage,
+    envName,
+    sha: result.artifactSha,
+    imageUri: result.type === "ecr" ? result.artifactUri : undefined,
+  });
 
   console.log(`\nShipped: ${opts.service}@${result.artifactSha} → ${opts.stage}/${envName}`);
 }

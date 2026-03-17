@@ -5,7 +5,7 @@
  * The engine is resolved at startup from .as.yml's `engine` field.
  */
 
-export type IacType = "system" | "component";
+export type IacType = "env" | "component";
 
 export type IacInitOpts = {
   root: string;
@@ -31,6 +31,8 @@ export interface IacEngine {
   readonly name: string;
   init(opts: IacInitOpts): void;
   apply(opts: IacRunOpts): void;
+  applyAsync(opts: IacRunOpts & { prefix?: string }): Promise<void>;
   destroy(opts: IacRunOpts): void;
+  destroyAsync(opts: IacRunOpts & { prefix?: string }): Promise<void>;
   plan(opts: IacRunOpts): void;
 }

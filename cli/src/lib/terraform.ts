@@ -6,7 +6,7 @@
  */
 
 import { writeFileSync } from "node:fs";
-import { exec } from "./shell.js";
+import { exec, execAsync } from "./shell.js";
 import type { IacEngine, IacInitOpts, IacRunOpts } from "./engine.js";
 import {
   resolveStateBucket,
@@ -35,6 +35,14 @@ export class TerraformEngine implements IacEngine {
     this.run("destroy", opts);
   }
 
+  applyAsync(opts: IacRunOpts & { prefix?: string }): Promise<void> {
+    return this.runAsync("apply", opts);
+  }
+
+  destroyAsync(opts: IacRunOpts & { prefix?: string }): Promise<void> {
+    return this.runAsync("destroy", opts);
+  }
+
   plan(opts: IacRunOpts): void {
     this.run("plan", opts);
   }
@@ -47,6 +55,19 @@ export class TerraformEngine implements IacEngine {
     const tfvarsFile = resolveTfvarsFile(cwd, opts.stage);
     const tfvarsArg = tfvarsFile ? `-var-file=${tfvarsFile}` : "";
     exec(`terraform ${action} ${tfvarsArg} ${varArgs} ${approve}`.trim(), { cwd });
+  }
+
+  private async runAsync(action: string, opts: IacRunOpts & { prefix?: string }): Promise<void> {
+    this.init(opts);
+    const cwd = resolveIacRoot(opts.root, opts.type, opts.serviceName);
+    const varArgs = this.buildVars(opts).join(" ");
+    const approve = opts.autoApprove ? "-auto-approve" : "";
+    const tfvarsFile = resolveTfvarsFile(cwd, opts.stage);
+    const tfvarsArg = tfvarsFile ? `-var-file=${tfvarsFile}` : "";
+    await execAsync(`terraform ${action} ${tfvarsArg} ${varArgs} ${approve}`.trim(), {
+      cwd,
+      prefix: opts.prefix,
+    });
   }
 
   private buildVars(opts: IacRunOpts): string[] {

@@ -2,7 +2,7 @@
  * Shell execution helpers — runs terraform, esbuild, docker, and aws CLI commands.
  */
 
-import { execSync, type ExecSyncOptions } from "node:child_process";
+import { execSync, spawn, type ExecSyncOptions } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -27,6 +27,51 @@ export function exec(command: string, opts: ExecOptions = {}): string {
 
   execSync(command, execOpts);
   return "";
+}
+
+export function execAsync(
+  command: string,
+  opts: ExecOptions & { prefix?: string } = {},
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const prefix = opts.prefix ? `[${opts.prefix}] ` : "";
+    const child = spawn("sh", ["-c", command], {
+      cwd: opts.cwd,
+      env: { ...process.env, ...opts.env },
+      stdio: opts.silent ? "pipe" : ["ignore", "pipe", "pipe"],
+    });
+
+    let stdout = "";
+    let stderr = "";
+
+    child.stdout?.on("data", (data: Buffer) => {
+      const text = data.toString();
+      stdout += text;
+      if (!opts.silent) {
+        for (const line of text.split("\n")) {
+          if (line) process.stdout.write(`${prefix}${line}\n`);
+        }
+      }
+    });
+
+    child.stderr?.on("data", (data: Buffer) => {
+      const text = data.toString();
+      stderr += text;
+      if (!opts.silent) {
+        for (const line of text.split("\n")) {
+          if (line) process.stderr.write(`${prefix}${line}\n`);
+        }
+      }
+    });
+
+    child.on("close", (code) => {
+      if (code !== 0) {
+        reject(new Error(`Command failed: ${command}\n${stderr}`));
+      } else {
+        resolve(stdout);
+      }
+    });
+  });
 }
 
 export function gitShortSha(cwd?: string): string {

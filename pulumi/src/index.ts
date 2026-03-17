@@ -1,4 +1,4 @@
-export { AsEnvironment, AsEnvironmentRef, type AsEnvironmentArgs } from "./as-environment.js";
+export { Env, EnvRef, type EnvArgs, type ProvidesConfig, type ApiGatewayConfig, type EcsConfig } from "./as-environment.js";
 export { AsService, type AsServiceArgs, type AsServiceOverrides } from "./as-service.js";
 export { AsQueue, type AsQueueArgs } from "./as-queue.js";
 export { AsMongo, type AsMongoArgs } from "./as-mongo.js";

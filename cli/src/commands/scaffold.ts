@@ -66,13 +66,13 @@ function scaffoldPulumi(appDir: string, name: string): void {
   writeFileSync(
     `${infraDir}/index.ts`,
     `import * as pulumi from "@pulumi/pulumi";
-import { AsService, AsEnvironment } from "@as/pulumi";
+import { AsService, Env } from "@as/pulumi";
 
 const config = new pulumi.Config();
 const stage = config.require("stage");
 const envName = config.require("envName");
 
-const env = AsEnvironment.ref(stage, envName);
+const env = Env.ref(stage, envName);
 
 new AsService("${name}", {
   stage,

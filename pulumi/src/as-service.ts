@@ -96,6 +96,7 @@ export interface AsServiceArgs {
   // ECS-specific
   port?: pulumi.Input<number>;
   healthCheckPath?: pulumi.Input<string>;
+  deployStrategy?: "rolling" | "codedeploy";
 
   // Connections — typed wiring to resources
   connections?: Connection<ServiceTarget>[];
@@ -133,6 +134,7 @@ export class AsService extends pulumi.ComponentResource {
     const runtime = args.runtime ?? "lambda";
     const isLambda = runtime === "lambda";
     const isEcs = runtime === "ecs";
+    const deployStrategy = args.deployStrategy ?? (isEcs ? "rolling" : "codedeploy");
     const packageType = args.packageType ?? "Zip";
     const isZip = isLambda && packageType === "Zip";
     const isImage = (isLambda && packageType === "Image") || isEcs;
@@ -205,7 +207,7 @@ export class AsService extends pulumi.ComponentResource {
     // SSM Lookups — foundation context
     // -----------------------------------------------------------------------
 
-    const vpcId = target.needsVpc
+    const vpcId = target.needsVpc || isEcs
       ? stage
           .apply((s) => aws.ssm.getParameter({ name: `/${s}/foundation/vpc-id` }))
           .apply((p) => p.value)
@@ -444,7 +446,8 @@ export class AsService extends pulumi.ComponentResource {
             function: lambdaFunction.name,
             qualifier: lambdaAlias.name,
             principal: "apigateway.amazonaws.com",
-            sourceArn: pulumi.interpolate`arn:aws:execute-api:*:*:${lambdaTarget.routes[0].apiGatewayId}/*/*`,
+            sourceArn: pulumi.all([aws.getRegionOutput().name, aws.getCallerIdentityOutput().accountId, lambdaTarget.routes[0].apiGatewayId])
+              .apply(([region, accountId, apiId]) => `arn:aws:execute-api:${region}:${accountId}:${apiId}/*/*`),
           },
           { parent: this },
         );
@@ -625,7 +628,10 @@ export class AsService extends pulumi.ComponentResource {
       );
 
       let targetGroup: aws.lb.TargetGroup | undefined;
+      let targetGroupGreen: aws.lb.TargetGroup | undefined;
       let listener: aws.lb.Listener | undefined;
+      let testListener: aws.lb.Listener | undefined;
+      const useCodeDeploy = deployStrategy === "codedeploy";
 
       if (ecsTarget.routes.length > 0) {
         const albSg = new aws.ec2.SecurityGroup(
@@ -640,7 +646,13 @@ export class AsService extends pulumi.ComponentResource {
               protocol: "tcp",
               cidrBlocks: ["0.0.0.0/0"],
               description: "HTTP from VPC Link",
-            }],
+            }, ...(useCodeDeploy ? [{
+              fromPort: 8080,
+              toPort: 8080,
+              protocol: "tcp",
+              cidrBlocks: ["0.0.0.0/0"],
+              description: "Test listener for CodeDeploy",
+            }] : [])],
             egress: [{ fromPort: 0, toPort: 0, protocol: "-1", cidrBlocks: ["0.0.0.0/0"] }],
             tags: defaultTags,
           },
@@ -677,7 +689,7 @@ export class AsService extends pulumi.ComponentResource {
         targetGroup = new aws.lb.TargetGroup(
           `${name}-tg`,
           {
-            name: namePrefix.apply((p) => p.substring(0, 32)),
+            name: namePrefix.apply((p) => `${p.substring(0, 26)}-blue`),
             port,
             protocol: "HTTP",
             vpcId,
@@ -707,6 +719,40 @@ export class AsService extends pulumi.ComponentResource {
         );
 
         ecsListenerArn = listener.arn;
+
+        if (useCodeDeploy) {
+          targetGroupGreen = new aws.lb.TargetGroup(
+            `${name}-tg-green`,
+            {
+              name: namePrefix.apply((p) => `${p.substring(0, 25)}-green`),
+              port,
+              protocol: "HTTP",
+              vpcId,
+              targetType: "ip",
+              healthCheck: {
+                path: args.healthCheckPath ?? "/health",
+                protocol: "HTTP",
+                healthyThreshold: 2,
+                unhealthyThreshold: 3,
+                timeout: 5,
+                interval: 30,
+              },
+              tags: defaultTags,
+            },
+            { parent: this },
+          );
+
+          testListener = new aws.lb.Listener(
+            `${name}-test-listener`,
+            {
+              loadBalancerArn: alb.arn,
+              port: 8080,
+              protocol: "HTTP",
+              defaultActions: [{ type: "forward", targetGroupArn: targetGroupGreen.arn }],
+            },
+            { parent: this },
+          );
+        }
 
         // API Gateway → VPC Link → ALB integration
         const vpcLinkId = ecsTarget.routes[0].vpcLinkId;
@@ -747,9 +793,97 @@ export class AsService extends pulumi.ComponentResource {
                 containerPort: port,
               }]
             : undefined,
+          deploymentController: useCodeDeploy
+            ? { type: "CODE_DEPLOY" }
+            : undefined,
         },
-        { parent: this, dependsOn: listener ? [listener] : [] },
+        {
+          parent: this,
+          dependsOn: listener ? [listener] : [],
+          ...(useCodeDeploy ? { ignoreChanges: ["taskDefinition", "loadBalancers"] } : {}),
+        },
       );
+
+      // CodeDeploy for ECS (opt-in)
+      if (useCodeDeploy && targetGroup && targetGroupGreen && listener && testListener) {
+        const ecsCodedeployRole = new aws.iam.Role(
+          `${name}-ecs-codedeploy-role`,
+          {
+            name: pulumi.interpolate`${namePrefix}-ecs-codedeploy`,
+            assumeRolePolicy: JSON.stringify({
+              Version: "2012-10-17",
+              Statement: [{
+                Action: "sts:AssumeRole",
+                Effect: "Allow",
+                Principal: { Service: "codedeploy.amazonaws.com" },
+              }],
+            }),
+            tags: defaultTags,
+          },
+          { parent: this },
+        );
+
+        new aws.iam.RolePolicyAttachment(
+          `${name}-ecs-codedeploy-policy`,
+          {
+            role: ecsCodedeployRole.name,
+            policyArn: "arn:aws:iam::aws:policy/AWSCodeDeployRoleForECS",
+          },
+          { parent: this },
+        );
+
+        const ecsCodedeployApp = new aws.codedeploy.Application(
+          `${name}-ecs-codedeploy-app`,
+          {
+            computePlatform: "ECS",
+            name: namePrefix,
+            tags: defaultTags,
+          },
+          { parent: this },
+        );
+
+        new aws.codedeploy.DeploymentGroup(
+          `${name}-ecs-codedeploy-dg`,
+          {
+            appName: ecsCodedeployApp.name,
+            deploymentGroupName: namePrefix,
+            serviceRoleArn: ecsCodedeployRole.arn,
+            deploymentConfigName: "CodeDeployDefault.ECSAllAtOnce",
+            deploymentStyle: {
+              deploymentType: "BLUE_GREEN",
+              deploymentOption: "WITH_TRAFFIC_CONTROL",
+            },
+            blueGreenDeploymentConfig: {
+              deploymentReadyOption: {
+                actionOnTimeout: "CONTINUE_DEPLOYMENT",
+              },
+              terminateBlueInstancesOnDeploymentSuccess: {
+                action: "TERMINATE",
+                terminationWaitTimeInMinutes: 5,
+              },
+            },
+            ecsService: {
+              clusterName: ecsClusterArn.apply((arn) => arn.split("/").pop()!),
+              serviceName: ecsService.name,
+            },
+            loadBalancerInfo: {
+              targetGroupPairInfo: {
+                prodTrafficRoute: {
+                  listenerArns: [listener.arn],
+                },
+                testTrafficRoute: {
+                  listenerArns: [testListener.arn],
+                },
+                targetGroups: [
+                  { name: targetGroup.name },
+                  { name: targetGroupGreen.name },
+                ],
+              },
+            },
+          },
+          { parent: this, dependsOn: [ecsService] },
+        );
+      }
     }
 
     // -----------------------------------------------------------------------
@@ -761,8 +895,8 @@ export class AsService extends pulumi.ComponentResource {
     this.aliasArn = isLambda && lambdaAlias ? lambdaAlias.arn : pulumi.output("");
     this.roleArn = isLambda ? lambdaRoleArn : ecsTaskRoleArn;
     this.roleName = isLambda ? lambdaRoleName : ecsTaskRoleName;
-    this.codedeployAppName = isLambda ? namePrefix : pulumi.output("");
-    this.codedeployDeploymentGroupName = isLambda ? namePrefix : pulumi.output("");
+    this.codedeployAppName = (isLambda || (isEcs && deployStrategy === "codedeploy")) ? namePrefix : pulumi.output("");
+    this.codedeployDeploymentGroupName = (isLambda || (isEcs && deployStrategy === "codedeploy")) ? namePrefix : pulumi.output("");
     this.ecsServiceName = isEcs && ecsService ? ecsService.name : pulumi.output("");
     this.taskDefinitionArn = isEcs && ecsTaskDef ? ecsTaskDef.arn : pulumi.output("");
     this.serviceUrl = target.routes.length > 0

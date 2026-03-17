@@ -60,6 +60,7 @@ function buildImage(serviceDir: string, sha: string, platform: string): void {
     [
       "docker build",
       `--platform linux/${platform}`,
+      "--provenance=false",
       `-t ${tag}`,
       serviceDir,
     ].join(" "),

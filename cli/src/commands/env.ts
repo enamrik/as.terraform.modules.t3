@@ -55,12 +55,12 @@ export function envApplyCommand(opts: EnvApplyOptions, engine: IacEngine): void 
   const root = discoverRoot(process.cwd());
   const envName = resolveEnvName(opts.stage, opts.envName);
 
-  console.log(`Applying system layer: ${opts.stage}/${envName}`);
+  console.log(`Applying env layer: ${opts.stage}/${envName}`);
   engine.apply({
     root,
     stage: opts.stage,
     envName,
-    type: "system",
+    type: "env",
     autoApprove: opts.autoApprove,
   });
 }
@@ -69,12 +69,12 @@ export async function envDestroyCommand(opts: EnvDestroyOptions, engine: IacEngi
   const root = discoverRoot(process.cwd());
   const envName = resolveEnvName(opts.stage, opts.envName);
 
-  console.log(`Destroying system layer: ${opts.stage}/${envName}`);
+  console.log(`Destroying env layer: ${opts.stage}/${envName}`);
   engine.destroy({
     root,
     stage: opts.stage,
     envName,
-    type: "system",
+    type: "env",
     vars: { sha: "destroying" },
     autoApprove: opts.autoApprove,
   });

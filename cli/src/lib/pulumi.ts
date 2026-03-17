@@ -11,7 +11,7 @@
 import { existsSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { exec } from "./shell.js";
+import { exec, execAsync } from "./shell.js";
 import type { IacEngine, IacInitOpts, IacRunOpts } from "./engine.js";
 import {
   resolveStateBucket,
@@ -29,7 +29,7 @@ export class PulumiEngine implements IacEngine {
     this.login(opts);
     this.ensureProjectFiles(cwd, this.projectName(opts));
     this.selectOrCreateStack(cwd, opts);
-    exec("pulumi install", { cwd });
+    exec("npm install --no-package-lock", { cwd });
   }
 
   apply(opts: IacRunOpts): void {
@@ -44,12 +44,31 @@ export class PulumiEngine implements IacEngine {
     this.run("preview", opts);
   }
 
+  applyAsync(opts: IacRunOpts & { prefix?: string }): Promise<void> {
+    return this.runAsync("up", opts);
+  }
+
+  destroyAsync(opts: IacRunOpts & { prefix?: string }): Promise<void> {
+    return this.runAsync("destroy", opts);
+  }
+
   private run(action: string, opts: IacRunOpts): void {
     this.init(opts);
     const cwd = resolveIacRoot(opts.root, opts.type, opts.serviceName);
     const configArgs = this.buildConfig(opts);
     const approve = opts.autoApprove ? "--yes" : "";
     exec(`pulumi ${action} ${configArgs} ${approve}`.trim(), { cwd });
+  }
+
+  private async runAsync(action: string, opts: IacRunOpts & { prefix?: string }): Promise<void> {
+    this.init(opts);
+    const cwd = resolveIacRoot(opts.root, opts.type, opts.serviceName);
+    const configArgs = this.buildConfig(opts);
+    const approve = opts.autoApprove ? "--yes" : "";
+    await execAsync(`pulumi ${action} ${configArgs} ${approve}`.trim(), {
+      cwd,
+      prefix: opts.prefix,
+    });
   }
 
   private login(opts: IacInitOpts): void {
@@ -63,7 +82,7 @@ export class PulumiEngine implements IacEngine {
   }
 
   private stackName(opts: IacInitOpts): string {
-    if (opts.type === "system") {
+    if (opts.type === "env") {
       return `${opts.stage}-${opts.envName}`;
     }
     return `${opts.stage}-${opts.envName}-${opts.serviceName}`;
@@ -95,7 +114,7 @@ export class PulumiEngine implements IacEngine {
 
   private projectName(opts: IacInitOpts): string {
     const system = resolveSystem(opts.root);
-    if (opts.type === "system") return system;
+    if (opts.type === "env") return system;
     return `${system}-${opts.serviceName}`;
   }
 
@@ -120,7 +139,6 @@ export class PulumiEngine implements IacEngine {
         JSON.stringify(
           {
             name: "pulumi-project",
-            type: "module",
             dependencies: {
               "@pulumi/pulumi": "^3.0.0",
               "@pulumi/aws": "^6.0.0",
@@ -140,9 +158,9 @@ export class PulumiEngine implements IacEngine {
         JSON.stringify(
           {
             compilerOptions: {
-              target: "ES2022",
-              module: "Node16",
-              moduleResolution: "Node16",
+              target: "es2020",
+              module: "commonjs",
+              moduleResolution: "node",
               strict: true,
               esModuleInterop: true,
               skipLibCheck: true,

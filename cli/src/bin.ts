@@ -118,13 +118,13 @@ program
 
 program
   .command("init")
-  .description("Initialize infrastructure for all roots (system + components)")
-  .option("--stage <stage>", "Target stage", DEFAULT_STAGE)
-  .option("--env <env>", "Environment name")
-  .action((opts: { stage: string; env?: string }) => {
-    const envName = resolveEnvName(opts.stage, opts.env);
-    const engine = resolveEngine();
-    initCommand({ stage: opts.stage, envName }, engine);
+  .description("Initialize project (.as.yml) and optionally IaC roots")
+  .option("--system <name>", "System name (default: root folder name)")
+  .option("--stage <stage>", "Also run IaC init for this stage")
+  .option("--env <env>", "Environment name (for IaC init)")
+  .action((opts: { system?: string; stage?: string; env?: string }) => {
+    const engine = opts.stage ? resolveEngine() : undefined;
+    initCommand({ system: opts.system, stage: opts.stage, envName: opts.env }, engine);
   });
 
 // ─── build ───────────────────────────────────────────────────────────────────
@@ -196,17 +196,19 @@ program
   .option("--stage <stage>", "Target stage", DEFAULT_STAGE)
   .option("--env <env>", "Target environment")
   .option("--sha <sha>", "Deploy a specific previously-published version")
+  .option("--image-uri <uri>", "ECR image URI (required for ECS CodeDeploy)")
   .option("--force", "Skip deploy guards", false)
   .action(
     async (
       service: string,
-      opts: { stage: string; env?: string; sha?: string; force: boolean },
+      opts: { stage: string; env?: string; sha?: string; imageUri?: string; force: boolean },
     ) => {
       await deployCommand({
         service,
         stage: opts.stage,
         envName: opts.env,
         sha: opts.sha,
+        imageUri: opts.imageUri,
         force: opts.force,
       });
     },

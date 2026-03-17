@@ -2,12 +2,12 @@
  * ascli down --stage <stage> --env <env> [-y]
  *
  * Tear down an environment completely.
- * component:destroy all → env:destroy (system layer + manifest cleanup)
+ * component:destroy all (parallel) → env:destroy
  */
 
 import { resolveEnvName } from "../lib/conventions.js";
 import { resolveEngine } from "../lib/resolve-engine.js";
-import { componentDestroyCommand } from "./component.js";
+import { componentDestroyParallel } from "./component.js";
 import { envDestroyCommand } from "./env.js";
 
 export type DownOptions = {
@@ -22,7 +22,7 @@ export async function downCommand(opts: DownOptions): Promise<void> {
 
   console.log(`Tearing down environment: ${opts.stage}/${envName}\n`);
 
-  componentDestroyCommand(
+  await componentDestroyParallel(
     { stage: opts.stage, envName, autoApprove: opts.yes },
     engine,
   );
