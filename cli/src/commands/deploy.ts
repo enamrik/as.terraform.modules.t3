@@ -13,7 +13,7 @@
  * ECS path:
  *   1. Describe current task definition
  *   2. Register new task definition revision with updated image
- *   3. UpdateService → ECS handles blue/green natively
+ *   3. CreateDeployment → CodeDeploy blue/green traffic shift via ALB
  *   4. Update deployment manifest in DynamoDB
  *
  * Rollback: reads the previous SHA from the manifest and redeploys it.
@@ -31,12 +31,11 @@ import {
   DescribeServicesCommand,
   DescribeTaskDefinitionCommand,
   RegisterTaskDefinitionCommand,
-  UpdateServiceCommand,
 } from "@aws-sdk/client-ecs";
 import {
   CodeDeployClient,
   CreateDeploymentCommand,
-} from "@aws-sdk/client-codedeploy";  // Lambda CodeDeploy only
+} from "@aws-sdk/client-codedeploy";
 import { STSClient, GetCallerIdentityCommand } from "@aws-sdk/client-sts";
 import { fromSSO } from "@aws-sdk/credential-provider-sso";
 import { existsSync } from "node:fs";
@@ -270,21 +269,51 @@ async function deployEcs(
   const newTaskDefArn = newTaskDef.taskDefinition!.taskDefinitionArn!;
   console.log(`New task definition: ${newTaskDefArn}`);
 
-  // 5. Update ECS service with new task definition — ECS handles blue/green natively
-  console.log("Updating ECS service...");
-  await ecs.send(
-    new UpdateServiceCommand({
-      cluster: ecsClusterArn,
-      service: serviceName,
-      taskDefinition: newTaskDefArn,
+  // 5. Create CodeDeploy deployment for blue/green traffic shift
+  const codedeploy = new CodeDeployClient({ region, credentials });
+  const codedeployApp = serviceName;
+  const deploymentGroup = serviceName;
+
+  const containerName = ecsService.loadBalancers?.[0]?.containerName ?? opts.service;
+  const containerPort = ecsService.loadBalancers?.[0]?.containerPort ?? 8080;
+
+  const appSpec = {
+    version: 0.0,
+    Resources: [
+      {
+        TargetService: {
+          Type: "AWS::ECS::Service",
+          Properties: {
+            TaskDefinition: newTaskDefArn,
+            LoadBalancerInfo: {
+              ContainerName: containerName,
+              ContainerPort: containerPort,
+            },
+          },
+        },
+      },
+    ],
+  };
+
+  console.log("Creating CodeDeploy deployment...");
+  const deployment = await codedeploy.send(
+    new CreateDeploymentCommand({
+      applicationName: codedeployApp,
+      deploymentGroupName: deploymentGroup,
+      revision: {
+        revisionType: "AppSpecContent",
+        appSpecContent: {
+          content: JSON.stringify(appSpec),
+        },
+      },
     }),
   );
-  console.log("ECS service update initiated");
+  console.log(`Deployment started: ${deployment.deploymentId}`);
 
   // 6. Update manifest
   await updateManifest(manifest, opts, envName, sha, imageUri);
 
-  console.log(`\nDeploy complete: ${opts.service}@${sha}`);
+  console.log(`\nDeploy complete: ${opts.service}@${sha} (deployment: ${deployment.deploymentId})`);
 }
 
 async function updateManifest(
